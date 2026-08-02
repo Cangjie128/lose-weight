@@ -33,6 +33,12 @@ npm run build
 npm run start
 ```
 
+OpenAI Sites/Cloudflare Worker 备用构建：
+
+```bash
+npm run build:sites
+```
+
 基础测试：
 
 ```bash
@@ -88,14 +94,21 @@ OPENAI_MODEL=gpt-5.6
 
 ## 部署
 
-部署到支持 Next/Vite/Vinext 的平台时，需要配置同样的环境变量：
+推荐部署到 Vercel。导入 GitHub 仓库后，Vercel 会运行：
+
+```bash
+npm ci
+npm run build
+```
+
+需要在 Vercel 项目中配置同样的环境变量：
 
 - `NEXT_PUBLIC_SUPABASE_URL`
 - `NEXT_PUBLIC_SUPABASE_ANON_KEY`
 - `OPENAI_API_KEY`
 - `OPENAI_MODEL`
 
-如果使用 OpenAI Sites/Cloudflare Worker 运行，请在托管平台的环境变量设置中保存这些值，不要把真实密钥提交到仓库。
+如果使用 OpenAI Sites/Cloudflare Worker 运行，请使用 `npm run build:sites`。无论部署到哪里，都请在托管平台的环境变量设置中保存密钥，不要把真实密钥提交到仓库。
 
 ## 模拟数据说明
 
