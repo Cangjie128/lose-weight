@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { AppData } from "./fat-loss";
 
 export const mealAnalysisSchema = z.object({
   foods: z.array(z.string()).default([]),
@@ -28,6 +29,174 @@ export const dailySummarySchema = z.object({
 
 export type MealAnalysis = z.infer<typeof mealAnalysisSchema>;
 export type DailySummary = z.infer<typeof dailySummarySchema>;
+
+const recordSchema = z.object({
+  id: z.string().min(1),
+  user_id: z.string().min(1),
+  record_date: z.iso.date(),
+  created_at: z.string().optional(),
+  updated_at: z.string().optional(),
+});
+
+const tasksSchema = z.object({
+  weighed: z.boolean().default(false),
+  breakfast: z.boolean().default(false),
+  lunch: z.boolean().default(false),
+  dinner: z.boolean().default(false),
+  exercise: z.boolean().default(false),
+  protein: z.boolean().default(false),
+  vegetables: z.boolean().default(false),
+  water: z.boolean().default(false),
+  summary: z.boolean().default(false),
+});
+
+export const appDataSchema = z.object({
+  profile: recordSchema.extend({
+    gender: z.string(),
+    height_cm: z.number(),
+    current_weight_kg: z.number(),
+    starting_weight_kg: z.number(),
+    target_weight_kg: z.number(),
+    challenge_start_date: z.iso.date(),
+    challenge_end_date: z.iso.date(),
+    weekly_exercise_goal: z.number(),
+    water_goal_ml: z.number(),
+    diet_preferences: z.string(),
+    disliked_foods: z.string(),
+    health_notes: z.string(),
+    is_menstrual_period: z.boolean(),
+    ai_enabled: z.boolean(),
+    ai_model: z.string(),
+  }),
+  challenge: recordSchema.extend({
+    start_date: z.iso.date(),
+    end_date: z.iso.date(),
+    start_weight_kg: z.number(),
+    target_weight_kg: z.number(),
+    weekly_exercise_goal: z.number(),
+    water_goal_ml: z.number(),
+    status: z.enum(["active", "archived"]),
+  }),
+  weights: z.array(recordSchema.extend({
+    weight_kg: z.number().positive(),
+    note: z.string(),
+    high_salt: z.boolean(),
+    late_dinner: z.boolean(),
+    menstrual_period: z.boolean(),
+    bowel_movement: z.boolean(),
+    poor_sleep: z.boolean(),
+    hard_training_previous_day: z.boolean(),
+  })),
+  meals: z.array(recordSchema.extend({
+    meal_type: z.enum(["breakfast", "lunch", "dinner", "snack"]),
+    food_name: z.string(),
+    portion: z.string(),
+    notes: z.string(),
+    ai_analysis: mealAnalysisSchema.nullable(),
+    images: z.array(recordSchema.extend({
+      meal_record_id: z.string().min(1),
+      storage_path: z.string().min(1),
+      signed_url: z.string().optional(),
+      file_name: z.string().optional(),
+    })),
+  })),
+  exercises: z.array(recordSchema.extend({
+    exercise_type: z.enum(["跑步", "游泳", "步行", "羽毛球", "力量训练", "其他"]),
+    duration_min: z.number().nonnegative(),
+    distance_km: z.number().nonnegative().nullable(),
+    intensity: z.enum(["低", "中", "高"]),
+    calories_burned: z.number().nonnegative().nullable(),
+    feeling: z.string(),
+    has_discomfort: z.boolean(),
+    discomfort_detail: z.string(),
+  })),
+  checkins: z.array(recordSchema.extend({
+    tasks: tasksSchema,
+    water_ml: z.number().nonnegative(),
+    sleep_hours: z.number().nonnegative().nullable(),
+    body_feeling: z.string(),
+    bowel_movement: z.boolean(),
+    menstrual_period: z.boolean(),
+    completion_score: z.number(),
+  }).transform((checkin) => ({
+    ...checkin,
+    completion_score: Math.round(
+      Object.values(checkin.tasks).filter(Boolean).length / 9 * 100,
+    ),
+  }))),
+  summaries: z.array(recordSchema.extend({
+    summary: dailySummarySchema,
+    source_snapshot: z.unknown(),
+  })),
+});
+
+const backupSchema = z.object({
+  app: z.literal("gentle-fat-loss-coach"),
+  version: z.literal(1),
+  exported_at: z.iso.datetime(),
+  data: appDataSchema,
+});
+
+export function createDataBackup(data: AppData) {
+  const validated = appDataSchema.parse(data);
+  return {
+    app: "gentle-fat-loss-coach" as const,
+    version: 1 as const,
+    exported_at: new Date().toISOString(),
+    data: {
+      ...validated,
+      meals: validated.meals.map((meal) => ({
+        ...meal,
+        images: meal.images.map((image) => ({ ...image, signed_url: undefined })),
+      })),
+    },
+  };
+}
+
+export function parseDataBackup(value: unknown): AppData {
+  const result = backupSchema.safeParse(value);
+  if (!result.success) {
+    throw new Error("备份文件格式或版本不正确，原有记录未修改。");
+  }
+  return result.data.data;
+}
+
+export function mergeBackupData(current: AppData, incoming: AppData): AppData {
+  const userId = current.profile.user_id;
+  function merge<T extends { id: string; user_id: string; record_date: string }>(
+    existing: T[],
+    restored: T[],
+    byDate = false,
+  ): T[] {
+    const records = new Map<string, T>();
+    for (const record of [...existing, ...restored]) {
+      records.set(byDate ? record.record_date : record.id, { ...record, user_id: userId });
+    }
+    return [...records.values()].sort((a, b) => a.record_date.localeCompare(b.record_date));
+  }
+  const meals = merge(current.meals, incoming.meals).map((meal) => {
+    const previous = current.meals.find((item) => item.id === meal.id);
+    return {
+      ...meal,
+      images: merge(previous?.images ?? [], meal.images).map((image) => ({
+        ...image,
+        meal_record_id: meal.id,
+        signed_url: image.storage_path.startsWith("data:image/")
+          ? image.storage_path
+          : undefined,
+      })),
+    };
+  });
+  return {
+    profile: { ...incoming.profile, id: current.profile.id, user_id: userId },
+    challenge: { ...incoming.challenge, id: current.challenge.id, user_id: userId },
+    weights: merge(current.weights, incoming.weights, true),
+    meals,
+    exercises: merge(current.exercises, incoming.exercises),
+    checkins: merge(current.checkins, incoming.checkins, true),
+    summaries: merge(current.summaries, incoming.summaries, true),
+  };
+}
 
 export const mealAnalysisJsonSchema = {
   type: "object",

@@ -1,4 +1,5 @@
 import type { DailySummary, MealAnalysis } from "./schemas";
+import { addDays as shiftDays, differenceInCalendarDays, format, parseISO } from "date-fns";
 
 export type MealType = "breakfast" | "lunch" | "dinner" | "snack";
 export type ExerciseType =
@@ -183,14 +184,16 @@ export type AppData = {
   summaries: DailyAiSummaryRecord[];
 };
 
-export function todayString() {
-  return new Date().toISOString().slice(0, 10);
+export function formatDate(date: Date) {
+  return format(date, "yyyy-MM-dd");
+}
+
+export function todayString(date = new Date()) {
+  return formatDate(date);
 }
 
 export function addDays(dateString: string, days: number) {
-  const date = new Date(`${dateString}T00:00:00`);
-  date.setDate(date.getDate() + days);
-  return date.toISOString().slice(0, 10);
+  return formatDate(shiftDays(parseISO(dateString), days));
 }
 
 export function formatChineseDate(dateString: string) {
@@ -296,7 +299,8 @@ export function sortedWeights(weights: WeightRecord[]) {
 export function movingAverage(weights: WeightRecord[], windowSize = 7) {
   const sorted = sortedWeights(weights);
   return sorted.map((record, index) => {
-    const slice = sorted.slice(Math.max(0, index - windowSize + 1), index + 1);
+    const startDate = addDays(record.record_date, 1 - windowSize);
+    const slice = sorted.slice(0, index + 1).filter((item) => item.record_date >= startDate);
     const average =
       slice.reduce((sum, item) => sum + item.weight_kg, 0) / slice.length;
     return {
@@ -323,9 +327,7 @@ export function calculateStreak(checkins: DailyCheckin[], fromDate = todayString
 }
 
 export function daysBetween(start: string, end: string) {
-  const a = new Date(`${start}T00:00:00`).getTime();
-  const b = new Date(`${end}T00:00:00`).getTime();
-  return Math.ceil((b - a) / 86400000);
+  return differenceInCalendarDays(parseISO(end), parseISO(start));
 }
 
 export function clampNumber(value: number, min: number, max: number) {

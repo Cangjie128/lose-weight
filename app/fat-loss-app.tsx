@@ -2,7 +2,7 @@
 
 /* eslint-disable @next/next/no-img-element */
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { SupabaseClient, User } from "@supabase/supabase-js";
 import {
   Activity,
@@ -11,6 +11,7 @@ import {
   Camera,
   Check,
   Circle,
+  Download,
   Droplets,
   Dumbbell,
   Home,
@@ -24,6 +25,7 @@ import {
   Sparkles,
   Trash2,
   Utensils,
+  Upload,
   Waves,
 } from "lucide-react";
 import {
@@ -37,7 +39,14 @@ import {
   YAxis,
 } from "recharts";
 import { createBrowserSupabaseClient, hasSupabaseConfig } from "@/lib/supabase";
-import { mealAnalysisSchema, type MealAnalysis } from "@/lib/schemas";
+import {
+  appDataSchema,
+  createDataBackup,
+  mealAnalysisSchema,
+  mergeBackupData,
+  parseDataBackup,
+  type MealAnalysis,
+} from "@/lib/schemas";
 import {
   addDays,
   buildDefaultChallenge,
@@ -49,6 +58,7 @@ import {
   daysBetween,
   emptyTasks,
   exerciseTypes,
+  formatDate,
   formatChineseDate,
   getRecordForDate,
   mealTypeLabels,
@@ -107,16 +117,7 @@ function readDemoData(): AppData {
   if (typeof window === "undefined") return buildDefaultData(demoUserId);
   const raw = window.localStorage.getItem(demoStorageKey);
   if (!raw) return seedDemoData();
-  try {
-    const parsed = JSON.parse(raw) as AppData;
-    parsed.checkins = parsed.checkins.map((item) => ({
-      ...item,
-      tasks: normalizeTasks(item.tasks),
-    }));
-    return parsed;
-  } catch {
-    return seedDemoData();
-  }
+  return appDataSchema.parse(JSON.parse(raw));
 }
 
 function writeDemoData(data: AppData) {
@@ -157,8 +158,16 @@ function seedDemoData() {
       completion_score: completionFromTasks(tasks),
     };
   });
-  writeDemoData(data);
   return data;
+}
+
+function downloadJson(content: string, filename: string) {
+  const url = URL.createObjectURL(new Blob([content], { type: "application/json" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 function buildDefaultCheckin(userId: string, recordDate: string): DailyCheckin {
@@ -217,6 +226,11 @@ export default function FatLossApp() {
   const supabase = useMemo(() => createBrowserSupabaseClient(), []);
   const [user, setUser] = useState<User | null>(null);
   const [data, setData] = useState<AppData | null>(null);
+  const dataRef = useRef<AppData | null>(null);
+  const storageBlocked = useRef(false);
+  const storageUnsaved = useRef(false);
+  const rawRecoveryData = useRef<string | null>(null);
+  const [storageIssue, setStorageIssue] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<TabKey>("today");
   const [selectedDate, setSelectedDate] = useState(todayString());
   const [loading, setLoading] = useState(true);
@@ -232,20 +246,67 @@ export default function FatLossApp() {
   const isDemo = !supabaseConfigured || !supabase;
   const userId = user?.id ?? demoUserId;
 
-  function showToast(nextToast: Toast) {
-    setToast(nextToast);
+  function showToast(nextToast: Toast, requiresPersistence = true) {
+    setToast(nextToast?.type === "success" && requiresPersistence && isDemo && storageUnsaved.current
+      ? { type: "error", message: "改动尚未保存到浏览器，请先导出备份。" }
+      : nextToast);
     if (nextToast) {
       window.setTimeout(() => setToast(null), 3200);
     }
   }
 
+  function replaceData(next: AppData | null) {
+    dataRef.current = next;
+    setData(next);
+  }
+
   function updateLocal(updater: (current: AppData) => AppData) {
-    setData((current) => {
-      if (!current) return current;
-      const next = updater(current);
-      if (isDemo) writeDemoData(next);
-      return next;
-    });
+    const current = dataRef.current;
+    if (!current) return;
+    const next = updater(current);
+    if (isDemo && !storageBlocked.current) {
+      try {
+        writeDemoData(next);
+        storageUnsaved.current = false;
+        setStorageIssue(null);
+      } catch {
+        storageUnsaved.current = true;
+        setStorageIssue("浏览器存储空间不足或无法写入，最新改动仅保留在当前页面。请先导出备份，再刷新或关闭页面。");
+      }
+    }
+    replaceData(next);
+  }
+
+  function exportBackup() {
+    const current = dataRef.current;
+    if (!current) return;
+    try {
+      downloadJson(JSON.stringify(createDataBackup(current), null, 2), `减脂记录备份-${todayString()}.json`);
+      showToast({ type: "success", message: "备份文件已导出。" }, false);
+    } catch {
+      showToast({ type: "error", message: "备份导出失败，原有记录未修改。" });
+    }
+  }
+
+  function restoreBackup(incoming: AppData) {
+    const current = dataRef.current;
+    if (!current || !isDemo) return false;
+    try {
+      const next = mergeBackupData(current, incoming);
+      const previous = rawRecoveryData.current ?? JSON.stringify(createDataBackup(current), null, 2);
+      downloadJson(previous, `减脂记录恢复前备份-${todayString()}.json`);
+      writeDemoData(next);
+      storageBlocked.current = false;
+      storageUnsaved.current = false;
+      rawRecoveryData.current = null;
+      setStorageIssue(null);
+      replaceData(next);
+      showToast({ type: "success", message: "记录已合并恢复，并已导出恢复前的备份。" });
+      return true;
+    } catch {
+      showToast({ type: "error", message: "恢复未完成，请检查浏览器存储空间。原有记录未修改。" });
+      return false;
+    }
   }
 
   async function loadRemoteData(client: SupabaseClient, id: string) {
@@ -370,7 +431,7 @@ export default function FatLossApp() {
         images: signedImages.filter((image) => image.meal_record_id === meal.id),
       }));
 
-      setData({
+      replaceData({
         profile,
         challenge,
         weights: (weightsResult.data ?? []) as WeightRecord[],
@@ -389,7 +450,7 @@ export default function FatLossApp() {
           ? error.message
           : "读取 Supabase 数据失败，请检查数据库表和 RLS。";
       showToast({ type: "error", message });
-      setData(buildDefaultData(id));
+      replaceData(buildDefaultData(id));
     } finally {
       setLoading(false);
     }
@@ -401,7 +462,19 @@ export default function FatLossApp() {
     async function boot() {
       if (isDemo) {
         if (!cancelled) {
-          setData(readDemoData());
+          try {
+            replaceData(readDemoData());
+          } catch {
+            storageBlocked.current = true;
+            storageUnsaved.current = true;
+            try {
+              rawRecoveryData.current = window.localStorage.getItem(demoStorageKey);
+            } catch {
+              rawRecoveryData.current = null;
+            }
+            setStorageIssue("原有本地记录无法读取，已保留原始数据。当前改动仅保留在页面中；请导出原始记录，或从备份恢复。");
+            replaceData(buildDefaultData(demoUserId));
+          }
           setLoading(false);
         }
         return;
@@ -425,7 +498,7 @@ export default function FatLossApp() {
           if (session?.user) {
             await loadRemoteData(supabase, session.user.id);
           } else {
-            setData(null);
+            replaceData(null);
           }
         },
       );
@@ -955,6 +1028,25 @@ export default function FatLossApp() {
 
           {toast && <ToastMessage toast={toast} />}
 
+          {storageIssue && (
+            <div role="alert" className="mb-4 border-l-4 border-red-600 bg-red-50 p-4 text-sm text-red-900">
+              <p>{storageIssue}</p>
+              <div className="mt-3 flex flex-wrap gap-3">
+                <button onClick={exportBackup} className="flex min-h-10 items-center gap-2 font-semibold">
+                  <Download className="h-4 w-4" />导出当前记录
+                </button>
+                {rawRecoveryData.current && (
+                  <button
+                    onClick={() => downloadJson(rawRecoveryData.current!, `减脂原始记录-${todayString()}.json`)}
+                    className="flex min-h-10 items-center gap-2 font-semibold"
+                  >
+                    <Download className="h-4 w-4" />导出原始记录
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+
           {activeTab === "today" && (
             <TodayPage
               key={`today-${selectedDate}-${todayWeight?.id ?? "new"}`}
@@ -1031,6 +1123,10 @@ export default function FatLossApp() {
               key={`settings-${data.profile.id}-${data.profile.updated_at ?? "draft"}`}
               data={data}
               onSaveProfile={saveProfile}
+              isDemo={isDemo}
+              onExportBackup={exportBackup}
+              onRestoreBackup={restoreBackup}
+              onBackupError={(message) => showToast({ type: "error", message })}
             />
           )}
         </section>
@@ -1196,7 +1292,9 @@ function TopBar({
           <input
             type="date"
             value={selectedDate}
-            onChange={(event) => setSelectedDate(event.target.value)}
+            onChange={(event) => {
+              if (event.target.value) setSelectedDate(event.target.value);
+            }}
             className="rounded border border-[#ddcfba] bg-white px-2 py-2"
           />
         </label>
@@ -2289,7 +2387,7 @@ function CalendarPage({
   const cells = Array.from({ length: 42 }, (_, index) => {
     const cell = new Date(firstCell);
     cell.setDate(firstCell.getDate() + index);
-    return cell.toISOString().slice(0, 10);
+    return formatDate(cell);
   });
   const trend = movingAverage(data.weights, 7);
 
@@ -2439,13 +2537,39 @@ function CoachPage({
 function SettingsPage({
   data,
   onSaveProfile,
+  isDemo,
+  onExportBackup,
+  onRestoreBackup,
+  onBackupError,
 }: {
   data: AppData;
   onSaveProfile: (profile: Profile) => Promise<void>;
+  isDemo: boolean;
+  onExportBackup: () => void;
+  onRestoreBackup: (backup: AppData) => boolean;
+  onBackupError: (message: string) => void;
 }) {
   const [draft, setDraft] = useState(data.profile);
+  const [pendingBackup, setPendingBackup] = useState<AppData | null>(null);
+  const [readingBackup, setReadingBackup] = useState(false);
+
+  async function readBackupFile(file?: File) {
+    if (!file) return;
+    setReadingBackup(true);
+    try {
+      if (file.size > 20 * 1024 * 1024) throw new Error("备份文件不能超过 20 MB。");
+      setPendingBackup(parseDataBackup(JSON.parse(await file.text())));
+    } catch (error) {
+      onBackupError(error instanceof SyntaxError
+        ? "无法读取 JSON 备份文件，原有记录未修改。"
+        : error instanceof Error ? error.message : "读取备份失败。");
+    } finally {
+      setReadingBackup(false);
+    }
+  }
 
   return (
+    <div className="space-y-5">
     <section className="rounded-lg border border-[#eadfcf] bg-white p-4 shadow-sm">
       <h3 className="text-lg font-bold">个人设置</h3>
       <div className="mt-4 grid gap-3 md:grid-cols-2">
@@ -2621,15 +2745,101 @@ function SettingsPage({
         保存设置
       </button>
     </section>
+    <section className="border-t border-[#eadfcf] px-1 pt-5">
+      <h3 className="text-lg font-bold">记录备份</h3>
+      <p className="mt-2 text-sm text-[#667165]">
+        {isDemo ? "本地记录保存在此浏览器中，备份包含餐食照片。" : "当前记录已连接云端。导出文件包含记录与照片路径，照片文件仍保存在云端。"}
+      </p>
+      <div className="mt-3 flex flex-wrap gap-x-5 gap-y-2 text-sm text-[#667165]">
+        <span>体重 {data.weights.length} 条</span>
+        <span>饮食 {data.meals.length} 条</span>
+        <span>运动 {data.exercises.length} 条</span>
+        <span>打卡 {data.checkins.length} 天</span>
+        <span>总结 {data.summaries.length} 条</span>
+      </div>
+      <div className="mt-4 flex flex-wrap gap-3">
+        <button onClick={onExportBackup} className="flex min-h-11 items-center gap-2 rounded-md border border-[#d9ccb8] bg-white px-4 py-2 text-sm font-semibold">
+          <Download className="h-4 w-4" />导出备份
+        </button>
+        {isDemo && (
+          <label className={classNames("flex min-h-11 cursor-pointer items-center gap-2 rounded-md border border-[#d9ccb8] bg-white px-4 py-2 text-sm font-semibold", readingBackup && "opacity-60")}>
+            {readingBackup ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+            导入备份
+            <input
+              aria-label="导入备份"
+              type="file"
+              accept=".json,application/json"
+              className="sr-only"
+              disabled={readingBackup}
+              onChange={(event) => {
+                void readBackupFile(event.target.files?.[0]);
+                event.target.value = "";
+              }}
+            />
+          </label>
+        )}
+      </div>
+    </section>
+    {pendingBackup && (
+      <BackupRestoreDialog
+        backup={pendingBackup}
+        onCancel={() => setPendingBackup(null)}
+        onConfirm={() => {
+          if (onRestoreBackup(pendingBackup)) {
+            setDraft({ ...pendingBackup.profile, id: data.profile.id, user_id: data.profile.user_id });
+            setPendingBackup(null);
+          }
+        }}
+      />
+    )}
+    </div>
+  );
+}
+
+function BackupRestoreDialog({ backup, onCancel, onConfirm }: {
+  backup: AppData;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const dialog = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    const element = dialog.current;
+    element?.showModal();
+    return () => element?.close();
+  }, []);
+  const cloudImages = backup.meals.flatMap((meal) => meal.images).filter((image) => !image.storage_path.startsWith("data:image/"));
+  return (
+    <dialog
+      ref={dialog}
+      aria-labelledby="restore-title"
+      onCancel={onCancel}
+      className="m-auto max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] max-w-md overflow-y-auto rounded-lg border border-[#eadfcf] bg-white p-5 text-[#25342f] backdrop:bg-black/40"
+    >
+      <h3 id="restore-title" className="text-lg font-bold">确认恢复备份</h3>
+      <dl className="mt-4 grid grid-cols-2 gap-3 text-sm">
+        <dt>体重记录</dt><dd>{backup.weights.length} 条</dd>
+        <dt>饮食记录</dt><dd>{backup.meals.length} 条</dd>
+        <dt>运动记录</dt><dd>{backup.exercises.length} 条</dd>
+        <dt>每日打卡</dt><dd>{backup.checkins.length} 天</dd>
+        <dt>AI 总结</dt><dd>{backup.summaries.length} 条</dd>
+      </dl>
+      <p className="mt-4 text-sm leading-6 text-[#667165]">未重复的记录会保留；相同日期的体重、打卡和总结采用备份内容，个人设置也会恢复。恢复前会自动导出当前记录。</p>
+      {cloudImages.length > 0 && <p className="mt-3 text-sm text-amber-800">此备份含 {cloudImages.length} 张云端照片的路径，不含照片文件，导入本地后无法显示这些照片。</p>}
+      <div className="mt-5 flex justify-end gap-3">
+        <button autoFocus onClick={onCancel} className="min-h-11 rounded-md border border-[#d9ccb8] px-4 py-2 text-sm font-semibold">取消</button>
+        <button onClick={onConfirm} className="flex min-h-11 items-center gap-2 rounded-md bg-[#4f8d5f] px-4 py-2 text-sm font-semibold text-white"><Upload className="h-4 w-4" />合并恢复</button>
+      </div>
+    </dialog>
   );
 }
 
 function calculateWeeklyChange(weights: WeightRecord[]) {
   const trend = movingAverage(weights, 7);
-  if (trend.length < 8) return "0.0";
-  const latest = trend[trend.length - 1].moving_average;
-  const previous = trend[Math.max(0, trend.length - 8)].moving_average;
-  return (latest - previous).toFixed(1);
+  const latest = trend.at(-1);
+  if (!latest) return "0.0";
+  const previousDate = addDays(latest.record_date, -7);
+  const previous = trend.findLast((record) => record.record_date <= previousDate);
+  return previous ? (latest.moving_average - previous.moving_average).toFixed(1) : "0.0";
 }
 
 function EmptyState({ text }: { text: string }) {
