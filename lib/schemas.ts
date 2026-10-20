@@ -1,10 +1,16 @@
 import { z } from "zod";
 import type { AppData } from "./fat-loss";
+import { planningPreferencesSchema, taskUpdateSchema, weekPlanSchema } from "./plan-types.ts";
 
 export const mealAnalysisSchema = z.object({
   foods: z.array(z.string()).default([]),
-  estimated_calories_min: z.number().min(0),
-  estimated_calories_max: z.number().min(0),
+  estimated_calories_min: z.number().min(0).nullable(),
+  estimated_calories_max: z.number().min(0).nullable(),
+  estimated_portion_g: z.number().nonnegative().nullable().default(null),
+  protein_g: z.number().nonnegative().nullable().default(null),
+  fat_g: z.number().nonnegative().nullable().default(null),
+  carbohydrate_g: z.number().nonnegative().nullable().default(null),
+  recognition_status: z.enum(["recognized", "needs_info"]).default("recognized"),
   protein_level: z.enum(["偏低", "基本够", "较充足"]),
   carbohydrate_level: z.enum(["偏低", "适中", "偏高"]),
   fat_level: z.enum(["偏低", "适中", "偏高"]),
@@ -29,6 +35,23 @@ export const dailySummarySchema = z.object({
 
 export type MealAnalysis = z.infer<typeof mealAnalysisSchema>;
 export type DailySummary = z.infer<typeof dailySummarySchema>;
+
+export const nutritionTargetsSchema = z.object({
+  calories: z.number().min(1500).max(5000),
+  protein_g: z.number().min(30).max(250),
+  fat_g: z.number().min(25).max(200),
+  carbohydrate_g: z.number().min(100).max(700),
+});
+
+export const mealNutritionSchema = z.object({
+  calories_min: z.number().nonnegative().max(10000),
+  calories_max: z.number().nonnegative().max(10000),
+  protein_g: z.number().nonnegative().max(1000),
+  fat_g: z.number().nonnegative().max(1000),
+  carbohydrate_g: z.number().nonnegative().max(2000),
+  portion_g: z.number().positive().max(10000).nullable(),
+  source: z.enum(["manual", "ai"]),
+}).refine((value) => value.calories_max >= value.calories_min, "热量上限不能低于下限。");
 
 const recordSchema = z.object({
   id: z.string().min(1),
@@ -67,6 +90,12 @@ export const appDataSchema = z.object({
     is_menstrual_period: z.boolean(),
     ai_enabled: z.boolean(),
     ai_model: z.string(),
+    age: z.number().int().min(1).max(120).nullable().default(null),
+    activity_level: z.enum(["sedentary", "light", "moderate", "active"]).default("light"),
+    exercise_preferences: z.array(z.enum(["跑步", "游泳", "步行", "羽毛球", "力量训练", "其他"])).default(["步行", "力量训练"]),
+    nutrition_targets: nutritionTargetsSchema.nullable().default(null),
+    needs_professional_guidance: z.boolean().default(false),
+    planning: planningPreferencesSchema.default(() => planningPreferencesSchema.parse({})),
   }),
   challenge: recordSchema.extend({
     start_date: z.iso.date(),
@@ -93,14 +122,20 @@ export const appDataSchema = z.object({
     portion: z.string(),
     notes: z.string(),
     ai_analysis: mealAnalysisSchema.nullable(),
+    nutrition: mealNutritionSchema.nullable().default(null),
+    plan_task_id: z.string().optional(),
     images: z.array(recordSchema.extend({
       meal_record_id: z.string().min(1),
       storage_path: z.string().min(1),
       signed_url: z.string().optional(),
       file_name: z.string().optional(),
+      size_bytes: z.number().nonnegative().optional(),
+      mime_type: z.string().optional(),
+      sha256: z.string().optional(),
     })),
   })),
   exercises: z.array(recordSchema.extend({
+    plan_task_id: z.string().optional(),
     exercise_type: z.enum(["跑步", "游泳", "步行", "羽毛球", "力量训练", "其他"]),
     duration_min: z.number().nonnegative(),
     distance_km: z.number().nonnegative().nullable(),
@@ -118,6 +153,7 @@ export const appDataSchema = z.object({
     bowel_movement: z.boolean(),
     menstrual_period: z.boolean(),
     completion_score: z.number(),
+    fatigue_level: z.number().min(0).max(10).default(0),
   }).transform((checkin) => ({
     ...checkin,
     completion_score: Math.round(
@@ -128,6 +164,8 @@ export const appDataSchema = z.object({
     summary: dailySummarySchema,
     source_snapshot: z.unknown(),
   })),
+  plans: z.array(weekPlanSchema).default([]),
+  task_updates: z.array(taskUpdateSchema).default([]),
 });
 
 const backupSchema = z.object({
@@ -195,6 +233,8 @@ export function mergeBackupData(current: AppData, incoming: AppData): AppData {
     exercises: merge(current.exercises, incoming.exercises),
     checkins: merge(current.checkins, incoming.checkins, true),
     summaries: merge(current.summaries, incoming.summaries, true),
+    plans: [...new Map([...(current.plans || []),...(incoming.plans || [])].map((plan) => [plan.id,plan])).values()].sort((a,b) => a.week_start.localeCompare(b.week_start)),
+    task_updates: merge(current.task_updates || [],incoming.task_updates || []),
   };
 }
 
@@ -205,6 +245,7 @@ export const mealAnalysisJsonSchema = {
     "foods",
     "estimated_calories_min",
     "estimated_calories_max",
+    "estimated_portion_g", "protein_g", "fat_g", "carbohydrate_g", "recognition_status",
     "protein_level",
     "carbohydrate_level",
     "fat_level",
@@ -216,8 +257,13 @@ export const mealAnalysisJsonSchema = {
   ],
   properties: {
     foods: { type: "array", items: { type: "string" } },
-    estimated_calories_min: { type: "number", minimum: 0 },
-    estimated_calories_max: { type: "number", minimum: 0 },
+    estimated_calories_min: { type: ["number", "null"], minimum: 0 },
+    estimated_calories_max: { type: ["number", "null"], minimum: 0 },
+    estimated_portion_g: { type: ["number", "null"], minimum: 0 },
+    protein_g: { type: ["number", "null"], minimum: 0 },
+    fat_g: { type: ["number", "null"], minimum: 0 },
+    carbohydrate_g: { type: ["number", "null"], minimum: 0 },
+    recognition_status: { type: "string", enum: ["recognized", "needs_info"] },
     protein_level: { type: "string", enum: ["偏低", "基本够", "较充足"] },
     carbohydrate_level: { type: "string", enum: ["偏低", "适中", "偏高"] },
     fat_level: { type: "string", enum: ["偏低", "适中", "偏高"] },

@@ -10,7 +10,7 @@ import {
   CalendarDays,
   Camera,
   Check,
-  Circle,
+  ChevronDown,
   Download,
   Droplets,
   Dumbbell,
@@ -19,6 +19,7 @@ import {
   Loader2,
   LogOut,
   Plus,
+  RefreshCw,
   Save,
   Scale,
   Settings,
@@ -41,10 +42,10 @@ import {
 import { createBrowserSupabaseClient, hasSupabaseConfig } from "@/lib/supabase";
 import {
   appDataSchema,
-  createDataBackup,
   mealAnalysisSchema,
+  mealNutritionSchema,
   mergeBackupData,
-  parseDataBackup,
+  nutritionTargetsSchema,
   type MealAnalysis,
 } from "@/lib/schemas";
 import {
@@ -59,13 +60,10 @@ import {
   emptyTasks,
   exerciseTypes,
   formatDate,
-  formatChineseDate,
   getRecordForDate,
   mealTypeLabels,
   movingAverage,
   normalizeTasks,
-  taskKeys,
-  taskLabels,
   todayString,
   uid,
   type AppData,
@@ -79,6 +77,21 @@ import {
   type Profile,
   type WeightRecord,
 } from "@/lib/fat-loss";
+import DataStoragePanel from "./data-storage-panel";
+import ActionPlan from "./action-plan";
+import PlanningPreferencesEditor from "./planning-preferences-editor";
+import { generateWeekPlan,mondayOf,selectedPlanMeal,taskMealNutrition,taskState } from "@/lib/action-plan";
+import { planningPreferencesSchema,taskUpdateSchema,type PlanTask,type TaskUpdate } from "@/lib/plan-types";
+import ChatgptConnectionPanel from "./chatgpt-connection-panel";
+import { summaryRows } from "@/lib/chatgpt-data";
+import { scheduleSummarySync } from "@/lib/summary-sync-client";
+import AiStatusPanel, { FallbackAnalysisAction } from "./ai-status-panel";
+import { MealNutritionEditor, NutritionOverview } from "./nutrition-panels";
+import { legacyStorageKey, loadLocalData, localRetainedPhotos, readLocalPhoto, restoreLocalAtomically, saveLocalData, scrubRuntime, sha256, storePhoto } from "@/lib/photo-storage";
+import { exportZipBackup, type PreparedBackup } from "@/lib/zip-backup";
+import { cloudRetainedPhotos, cloudStorageUsage, fetchAllRows, readCloudPhoto, restoreCloudBackup } from "@/lib/cloud-storage";
+import { activityLabels, calculateNutritionTargets } from "@/lib/nutrition";
+import type { MealNutrition } from "@/lib/fat-loss";
 
 type TabKey =
   | "today"
@@ -92,7 +105,7 @@ type TabKey =
 type Toast = { type: "success" | "error" | "info"; message: string } | null;
 
 const demoUserId = "demo-local-user";
-const demoStorageKey = "gentle-fat-loss-coach-demo-data";
+const demoStorageKey = legacyStorageKey;
 
 const tabs: Array<{ key: TabKey; label: string; icon: typeof Home }> = [
   { key: "today", label: "今日", icon: Home },
@@ -113,56 +126,19 @@ function omitRuntimeFields<T extends Record<string, unknown>>(record: T) {
   return dbRecord;
 }
 
-function readDemoData(): AppData {
-  if (typeof window === "undefined") return buildDefaultData(demoUserId);
-  const raw = window.localStorage.getItem(demoStorageKey);
-  if (!raw) return seedDemoData();
-  return appDataSchema.parse(JSON.parse(raw));
-}
-
-function writeDemoData(data: AppData) {
-  if (typeof window === "undefined") return;
-  window.localStorage.setItem(demoStorageKey, JSON.stringify(data));
+async function readDemoData(): Promise<AppData> {
+  return loadLocalData(seedDemoData);
 }
 
 function seedDemoData() {
-  const data = buildDefaultData(demoUserId);
-  const start = addDays(todayString(), -8);
-  const weights = [56, 55.8, 55.9, 55.5, 55.4, 55.6, 55.1, 55.0, 54.9];
-  data.weights = weights.map((weight, index) => ({
-    id: uid("weight"),
-    user_id: demoUserId,
-    record_date: addDays(start, index),
-    weight_kg: weight,
-    note: index === 5 ? "前一天吃了偏咸外食，睡眠一般" : "",
-    high_salt: index === 5,
-    late_dinner: false,
-    menstrual_period: false,
-    bowel_movement: index % 2 === 0,
-    poor_sleep: index === 5,
-    hard_training_previous_day: index === 4,
-  }));
-  data.checkins = weights.map((_, index) => {
-    const tasks = emptyTasks();
-    for (const key of taskKeys) tasks[key] = index % 4 !== 0;
-    return {
-      id: uid("checkin"),
-      user_id: demoUserId,
-      record_date: addDays(start, index),
-      tasks,
-      water_ml: 1700 + index * 30,
-      sleep_hours: 7,
-      body_feeling: index === 5 ? "有点水肿，但精神还可以" : "状态平稳",
-      bowel_movement: index % 2 === 0,
-      menstrual_period: false,
-      completion_score: completionFromTasks(tasks),
-    };
-  });
-  return data;
+  return buildDefaultData(demoUserId);
+}
+function downloadJson(content: string, filename: string) {
+  downloadBlob(new Blob([content], { type: "application/json" }), filename);
 }
 
-function downloadJson(content: string, filename: string) {
-  const url = URL.createObjectURL(new Blob([content], { type: "application/json" }));
+function downloadBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
   link.download = filename;
@@ -213,11 +189,11 @@ async function fileToDataUrl(file: File) {
 async function compressImage(file: File) {
   const imageCompression = (await import("browser-image-compression")).default;
   return imageCompression(file, {
-    maxSizeMB: 0.7,
-    maxWidthOrHeight: 1600,
-    useWebWorker: true,
+    maxSizeMB: 0.28,
+    maxWidthOrHeight: 1200,
+    useWebWorker: false,
     fileType: "image/jpeg",
-    initialQuality: 0.78,
+    initialQuality: 0.85,
   });
 }
 
@@ -231,11 +207,17 @@ export default function FatLossApp() {
   const storageUnsaved = useRef(false);
   const rawRecoveryData = useRef<string | null>(null);
   const [storageIssue, setStorageIssue] = useState<string | null>(null);
+  const [remoteLoadError, setRemoteLoadError] = useState<string | null>(null);
+  const [backupBusy, setBackupBusy] = useState(false);
+  const [backupProgress, setBackupProgress] = useState("");
+  const loadGeneration = useRef(0);
+  const remoteSaveQueue = useRef<Promise<unknown>>(Promise.resolve());
   const [activeTab, setActiveTab] = useState<TabKey>("today");
   const [selectedDate, setSelectedDate] = useState(todayString());
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState<Toast>(null);
+  const toastTimer = useRef<number | null>(null);
   const [authMode, setAuthMode] = useState<"login" | "signup">("login");
   const [authEmail, setAuthEmail] = useState("");
   const [authPassword, setAuthPassword] = useState("");
@@ -246,12 +228,39 @@ export default function FatLossApp() {
   const isDemo = !supabaseConfigured || !supabase;
   const userId = user?.id ?? demoUserId;
 
+  useEffect(() => {
+    if (!isDemo || !data || loading || data.plans?.length) return;
+    const current = dataRef.current;
+    if (!current || current.plans?.length) return;
+    void updateLocal((value) => ({ ...value,plans: [generateWeekPlan(value,todayString())] }));
+  },[data,isDemo,loading]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (isDemo || !user || !data || loading || backupBusy) return;
+    return scheduleSummarySync({ getHeaders: aiHeaders,waitForSaves: () => remoteSaveQueue.current,
+      onError: (message) => setToast({ type: "error",message }) });
+  },[data,isDemo,user,loading,backupBusy]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    const outcome = url.searchParams.get("google_connection");
+    if (!outcome) return;
+    const timer = window.setTimeout(() => {
+      setActiveTab("settings");
+      showToast(outcome === "authorized" ? { type: "info",message: "Google 授权已完成；摘要同步仍关闭，请确认后开启。" }
+        : { type: "error",message: "Google 授权未完成或已过期，原始记录未修改。请在设置中重新授权。" },false);
+      url.searchParams.delete("google_connection"); window.history.replaceState(null,"",url);
+    },0);
+    return () => window.clearTimeout(timer);
+  },[]); // eslint-disable-line react-hooks/exhaustive-deps
+
   function showToast(nextToast: Toast, requiresPersistence = true) {
+    if (toastTimer.current !== null) window.clearTimeout(toastTimer.current);
     setToast(nextToast?.type === "success" && requiresPersistence && isDemo && storageUnsaved.current
       ? { type: "error", message: "改动尚未保存到浏览器，请先导出备份。" }
       : nextToast);
     if (nextToast) {
-      window.setTimeout(() => setToast(null), 3200);
+      toastTimer.current = window.setTimeout(() => setToast(null), 5000);
     }
   }
 
@@ -260,199 +269,196 @@ export default function FatLossApp() {
     setData(next);
   }
 
-  function updateLocal(updater: (current: AppData) => AppData) {
+  async function updateLocal(updater: (current: AppData) => AppData) {
     const current = dataRef.current;
     if (!current) return;
     const next = updater(current);
+    replaceData(next);
     if (isDemo && !storageBlocked.current) {
       try {
-        writeDemoData(next);
+        await saveLocalData(next);
         storageUnsaved.current = false;
         setStorageIssue(null);
-      } catch {
+      } catch (error) {
         storageUnsaved.current = true;
-        setStorageIssue("浏览器存储空间不足或无法写入，最新改动仅保留在当前页面。请先导出备份，再刷新或关闭页面。");
+        setStorageIssue(error instanceof Error ? `${error.message} 最新改动尚未写入设备，请先导出备份。` : "浏览器存储空间不足或无法写入，最新改动仅保留在当前页面。请先导出备份，再刷新或关闭页面。");
       }
     }
-    replaceData(next);
   }
 
-  function exportBackup() {
+  async function readPhoto(image: MealImage): Promise<Blob> {
+    if (isDemo) return readLocalPhoto(image);
+    if (!supabase) throw new Error("请重新登录后导出照片。");
+    return readCloudPhoto(supabase, image);
+  }
+
+  async function generatePlan(date: string,previous?: string,replace = false) {
+    if (!isDemo) throw new Error("本轮行动计划仅在隔离本地模式验收；旧云端适配器不支持新计划，请先导出备份。");
+    await updateLocal((current) => {
+      const existing = current.plans?.find((plan) => plan.week_start===mondayOf(date));
+      if (existing && !replace) return current;
+      const next = generateWeekPlan(current,date,previous);
+      if (existing) for (const day of next.days) day.tasks = day.tasks.map((task) => {
+        const old = existing.days.flatMap((value) => value.tasks).find((value) => value.id===task.id);
+        return old && (taskState(current,old)!=="pending" || current.task_updates?.some((update) => update.id===old.id)) ? old : task;
+      });
+      return { ...current,plans: [...(current.plans || []).filter((plan) => plan.id!==next.id),next] };
+    });
+    if (storageUnsaved.current) throw new Error("计划尚未写入设备，请导出备份后检查空间。");
+  }
+
+  async function updatePlanTask(task: PlanTask,patch: Partial<TaskUpdate>) {
+    if (!isDemo) throw new Error("行动计划当前只支持本地验收，未连接正式数据库。");
+    const existing = dataRef.current?.task_updates?.find((update) => update.id===task.id);
+    const parsed = taskUpdateSchema.safeParse({ status: "pending",note: "",...existing,...patch,id: task.id,user_id: userId,record_date: task.date,updated_at: new Date().toISOString() });
+    if (!parsed.success) throw new Error("任务时间、份量或用时无效，请检查填写内容。");
+    await updateLocal((current) => ({ ...current,task_updates: [...(current.task_updates || []).filter((update) => update.id!==task.id),parsed.data] }));
+    if (storageUnsaved.current) throw new Error("执行状态尚未保存，请先导出备份。");
+  }
+
+  async function completePlanTask(task: PlanTask,minutes: number,atePlanned: boolean) {
+    if (!isDemo) throw new Error("行动计划当前仅在本地验收。");
+    if (task.kind === "meal" && atePlanned) {
+      const choice = selectedPlanMeal(dataRef.current!,task);
+      if (!choice || choice.needs_confirmation || dataRef.current?.task_updates?.find((update) => update.id===task.id)?.amount) throw new Error("请先确认实际食物和营养，不沿用修改前的份量估计。");
+      const success = await saveMeal({ id: uid("meal"),user_id: userId,record_date: task.date,meal_type: task.meal_type!,food_name: choice.title,portion: choice.portion,notes: "用户确认按计划用餐；营养为通用食物粗估，并非照片识别。",nutrition: taskMealNutrition(choice),ai_analysis: null,images: [],plan_task_id: task.id,created_at: new Date().toISOString() });
+      if (!success || storageUnsaved.current) throw new Error("实际餐食尚未保存，请先检查存储状态。");
+    }
+    if (task.kind === "exercise") {
+      if (!Number.isFinite(minutes) || minutes<1 || minutes>180) throw new Error("请填写 1–180 分钟的实际运动时长。");
+      await saveExercise({ id: uid("exercise"),user_id: userId,record_date: task.date,exercise_type: task.exercise_type || "其他",duration_min: minutes,distance_km: null,intensity: "低",calories_burned: null,feeling: "用户从计划确认实际执行",has_discomfort: false,discomfort_detail: "",plan_task_id: task.id,created_at: new Date().toISOString() });
+      if (storageUnsaved.current) throw new Error("实际运动尚未保存，请先导出备份。");
+    }
+    await updatePlanTask(task,{ status: "completed" });
+  }
+
+  async function photographPlanMeal(task: PlanTask,files: FileList) {
+    const transfer = new DataTransfer(); for (const file of Array.from(files)) transfer.items.add(file);
+    const current = dataRef.current!;
+    const old = current.meals.find((meal) => meal.plan_task_id===task.id);
+    const record: MealRecord = old || { id: uid("meal"),user_id: userId,record_date: task.date,meal_type: task.meal_type!,food_name: "待识别餐食",portion: "",notes: "从每日行动计划拍照记录；等待确认食物和份量。",nutrition: null,ai_analysis: null,images: [],plan_task_id: task.id,created_at: new Date().toISOString() };
+    if (!await saveMeal(record)) throw new Error("未能保存餐食，未执行识别调用。");
+    if (!await uploadMealImages(record,transfer.files)) throw new Error("照片未能保存，已有餐食记录保留，请检查空间后重试。");
+    if (storageUnsaved.current) throw new Error("照片尚未保存，请导出备份并检查空间。");
+    setActiveTab("meals");
+    showToast({ type: "info",message: "照片已加入这一天的饮食记录。识别需主动点击，不会自动产生付费调用。" },false);
+  }
+
+  async function exportBackup() {
     const current = dataRef.current;
     if (!current) return;
+    setBackupBusy(true);
     try {
-      downloadJson(JSON.stringify(createDataBackup(current), null, 2), `减脂记录备份-${todayString()}.json`);
-      showToast({ type: "success", message: "备份文件已导出。" }, false);
-    } catch {
-      showToast({ type: "error", message: "备份导出失败，原有记录未修改。" });
+      setBackupProgress("正在导出记录与真实照片");
+      const retained = isDemo ? await localRetainedPhotos(current) : await cloudRetainedPhotos(supabase!,current);
+      const blob = await exportZipBackup(current, readPhoto, (done, total) => setBackupProgress(`正在导出照片 ${done}/${total}`),retained);
+      downloadBlob(blob, `减脂完整备份-${todayString()}.zip`);
+      showToast({ type: "success", message: "完整 ZIP 备份已导出。" }, false);
+    } catch (error) {
+      showToast({ type: "error", message: error instanceof Error ? error.message : "备份导出失败，原有记录未修改。" });
+    } finally {
+      setBackupBusy(false);
+      setBackupProgress("");
     }
   }
 
-  function restoreBackup(incoming: AppData) {
+  async function restoreBackup(backup: PreparedBackup, recordsOnly: boolean) {
     const current = dataRef.current;
-    if (!current || !isDemo) return false;
+    if (!current || backupBusy) return false;
+    setBackupBusy(true);
     try {
-      const next = mergeBackupData(current, incoming);
-      const previous = rawRecoveryData.current ?? JSON.stringify(createDataBackup(current), null, 2);
-      downloadJson(previous, `减脂记录恢复前备份-${todayString()}.json`);
-      writeDemoData(next);
+      if (backup.missingImageIds.length && !recordsOnly) throw new Error("此备份缺少照片文件，请先确认是否仅恢复记录。");
+      if (rawRecoveryData.current) downloadJson(rawRecoveryData.current, `减脂原始恢复快照-${todayString()}.json`);
+      setBackupProgress("正在生成恢复前的完整备份");
+      const retained = isDemo ? await localRetainedPhotos(current) : await cloudRetainedPhotos(supabase!,current);
+      const before = await exportZipBackup(current, readPhoto, (done, total) => setBackupProgress(`恢复前备份照片 ${done}/${total}`),retained);
+      downloadBlob(before, `减脂恢复前备份-${todayString()}.zip`);
+      const incoming = structuredClone(backup.data);
+      if (recordsOnly) for (const meal of incoming.meals) {
+        const available = meal.images.filter((image) => !backup.missingImageIds.includes(image.id));
+        const existing = current.meals.find((record) => record.id === meal.id)?.images || [];
+        meal.images = [...available,...existing.filter((image) => !available.some((photo) => photo.id === image.id))];
+      }
+      setBackupProgress("正在合并恢复记录与照片，请保持页面打开");
+      if (isDemo) {
+        const next = mergeBackupData(current, incoming);
+        const photos = incoming.meals.flatMap((meal) => meal.images).filter((image) => backup.photos.has(image.id)).map((image) => ({ image, blob: backup.photos.get(image.id)! }));
+        replaceData(await restoreLocalAtomically(next, photos, current,backup.retainedPhotos?.values()));
+      } else {
+        if (!supabase) throw new Error("登录已失效，请重新登录。");
+        const merged = await restoreCloudBackup(supabase, current, { ...backup, data: incoming }, recordsOnly, (done, total) => setBackupProgress(`恢复云端照片 ${done}/${total}`));
+        replaceData(merged);
+        await loadRemoteData(supabase, userId);
+      }
       storageBlocked.current = false;
       storageUnsaved.current = false;
       rawRecoveryData.current = null;
       setStorageIssue(null);
-      replaceData(next);
-      showToast({ type: "success", message: "记录已合并恢复，并已导出恢复前的备份。" });
+      showToast({ type: "success", message: "完整备份已合并恢复，恢复前 ZIP 已导出。" });
       return true;
-    } catch {
-      showToast({ type: "error", message: "恢复未完成，请检查浏览器存储空间。原有记录未修改。" });
+    } catch (error) {
+      showToast({ type: "error", message: error instanceof Error ? error.message : "恢复事务未完成，原有记录和恢复快照已保留。请检查存储容量与网络后重试。" });
       return false;
+    } finally {
+      setBackupBusy(false);
+      setBackupProgress("");
     }
   }
 
   async function loadRemoteData(client: SupabaseClient, id: string) {
-    setLoading(true);
+    const generation = ++loadGeneration.current;
+    setLoading(!dataRef.current);
+    setRemoteLoadError(null);
     try {
-      let profile: Profile;
-      const profileResult = await client
-        .from("profiles")
-        .select("*")
-        .eq("user_id", id)
-        .maybeSingle();
-
+      let profileResult = await client.from("profiles").select("*").eq("user_id", id).maybeSingle();
       if (profileResult.error) throw profileResult.error;
-      if (profileResult.data) {
-        profile = profileResult.data as Profile;
-      } else {
-        const defaultProfile = buildDefaultProfile(id);
-        const inserted = await client
-          .from("profiles")
-          .insert(defaultProfile)
-          .select()
-          .single();
-        if (inserted.error) throw inserted.error;
-        profile = inserted.data as Profile;
+      if (!profileResult.data) {
+        const created = await client.from("profiles").upsert(buildDefaultProfile(id), { onConflict: "user_id", ignoreDuplicates: true });
+        if (created.error) throw created.error;
+        profileResult = await client.from("profiles").select("*").eq("user_id", id).single();
+        if (profileResult.error) throw profileResult.error;
       }
-
-      const [
-        challengeResult,
-        weightsResult,
-        mealsResult,
-        imagesResult,
-        exercisesResult,
-        checkinsResult,
-        summariesResult,
-      ] = await Promise.all([
-        client
-          .from("challenges")
-          .select("*")
-          .eq("user_id", id)
-          .eq("status", "active")
-          .order("created_at", { ascending: false })
-          .limit(1)
-          .maybeSingle(),
-        client
-          .from("weight_records")
-          .select("*")
-          .eq("user_id", id)
-          .order("record_date", { ascending: true }),
-        client
-          .from("meal_records")
-          .select("*")
-          .eq("user_id", id)
-          .order("created_at", { ascending: true }),
-        client
-          .from("meal_images")
-          .select("*")
-          .eq("user_id", id)
-          .order("created_at", { ascending: true }),
-        client
-          .from("exercise_records")
-          .select("*")
-          .eq("user_id", id)
-          .order("created_at", { ascending: true }),
-        client
-          .from("daily_checkins")
-          .select("*")
-          .eq("user_id", id)
-          .order("record_date", { ascending: true }),
-        client
-          .from("daily_ai_summaries")
-          .select("*")
-          .eq("user_id", id)
-          .order("record_date", { ascending: true }),
+      const profile = profileResult.data as Profile;
+      const [challengeResult, weights, meals, images, exercises, checkins, summaries] = await Promise.all([
+        client.from("challenges").select("*").eq("user_id", id).eq("status", "active").order("created_at", { ascending: false }).limit(1).maybeSingle(),
+        fetchAllRows(client, "weight_records", id),
+        fetchAllRows(client, "meal_records", id),
+        fetchAllRows(client, "meal_images", id),
+        fetchAllRows(client, "exercise_records", id),
+        fetchAllRows(client, "daily_checkins", id),
+        fetchAllRows(client, "daily_ai_summaries", id),
       ]);
-
-      for (const result of [
-        challengeResult,
-        weightsResult,
-        mealsResult,
-        imagesResult,
-        exercisesResult,
-        checkinsResult,
-        summariesResult,
-      ]) {
-        if (result.error) throw result.error;
-      }
-
-      let challenge = challengeResult.data as AppData["challenge"] | null;
+      if (challengeResult.error) throw challengeResult.error;
+      let challenge = challengeResult.data;
       if (!challenge) {
-        const defaultChallenge = buildDefaultChallenge(profile);
-        const inserted = await client
-          .from("challenges")
-          .insert(defaultChallenge)
-          .select()
-          .single();
+        const inserted = await client.from("challenges").insert(buildDefaultChallenge(profile)).select().single();
         if (inserted.error) throw inserted.error;
-        challenge = inserted.data as AppData["challenge"];
+        challenge = inserted.data;
       }
-
-      const imageRows = ((imagesResult.data ?? []) as MealImage[]).map(
-        (image) => ({ ...image }),
-      );
-      const signedImages = await Promise.all(
-        imageRows.map(async (image) => {
-          const signed = await client.storage
-            .from("meal-images")
-            .createSignedUrl(image.storage_path, 60 * 60);
-          return {
-            ...image,
-            signed_url: signed.data?.signedUrl ?? undefined,
-          };
-        }),
-      );
-
-      const meals = ((mealsResult.data ?? []) as MealRecord[]).map((meal) => ({
-        ...meal,
-        ai_analysis: meal.ai_analysis
-          ? mealAnalysisSchema.safeParse(meal.ai_analysis).success
-            ? (meal.ai_analysis as MealAnalysis)
-            : null
-          : null,
-        images: signedImages.filter((image) => image.meal_record_id === meal.id),
-      }));
-
-      replaceData({
-        profile,
-        challenge,
-        weights: (weightsResult.data ?? []) as WeightRecord[],
-        meals,
-        exercises: (exercisesResult.data ?? []) as ExerciseRecord[],
-        checkins: ((checkinsResult.data ?? []) as DailyCheckin[]).map((item) => ({
-          ...item,
-          tasks: normalizeTasks(item.tasks),
-          completion_score: item.completion_score ?? completionFromTasks(normalizeTasks(item.tasks)),
+      const paths = images.map((image) => String(image.storage_path));
+      const signed = paths.length ? await client.storage.from("meal-images").createSignedUrls(paths, 3600) : null;
+      const signedUrls = new Map((signed?.data || []).map((image) => [image.path, image.signedUrl]));
+      const next = appDataSchema.parse({
+        profile, challenge, weights, exercises, checkins, summaries,
+        meals: meals.map((meal) => ({
+          ...meal,
+          ai_analysis: meal.ai_analysis ? mealAnalysisSchema.safeParse(meal.ai_analysis).data ?? null : null,
+          images: images.filter((image) => image.meal_record_id === meal.id).map((image) => ({ ...image, signed_url: signedUrls.get(String(image.storage_path)) })),
         })),
-        summaries: (summariesResult.data ?? []) as DailyAiSummaryRecord[],
       });
+      const latest = [...next.weights].filter((record) => record.record_date <= todayString()).sort((a,b) => b.record_date.localeCompare(a.record_date))[0];
+      if (latest) next.profile.current_weight_kg = latest.weight_kg;
+      if (generation !== loadGeneration.current) return false;
+      replaceData(next);
+      return true;
     } catch (error) {
-      const message =
-        error instanceof Error
-          ? error.message
-          : "读取 Supabase 数据失败，请检查数据库表和 RLS。";
+      if (generation !== loadGeneration.current) return false;
+      const message = error instanceof Error ? error.message : "读取云端失败，请检查登录、网络和 V2 数据库迁移。";
+      setRemoteLoadError(message);
       showToast({ type: "error", message });
-      replaceData(buildDefaultData(id));
+      return false;
     } finally {
-      setLoading(false);
+      if (generation === loadGeneration.current) setLoading(false);
     }
   }
 
@@ -463,7 +469,8 @@ export default function FatLossApp() {
       if (isDemo) {
         if (!cancelled) {
           try {
-            replaceData(readDemoData());
+            const local = await readDemoData();
+            if (!cancelled) replaceData(local);
           } catch {
             storageBlocked.current = true;
             storageUnsaved.current = true;
@@ -493,16 +500,20 @@ export default function FatLossApp() {
     boot();
     if (!isDemo) {
       const { data: listener } = supabase.auth.onAuthStateChange(
-        async (_event, session) => {
+        (_event, session) => {
           setUser(session?.user ?? null);
           if (session?.user) {
-            await loadRemoteData(supabase, session.user.id);
+            if (dataRef.current?.profile.user_id !== session.user.id) replaceData(null);
+            window.setTimeout(() => { if (!cancelled) void loadRemoteData(supabase, session.user.id); }, 0);
           } else {
+            loadGeneration.current += 1;
+            setLoading(false);
+            setRemoteLoadError(null);
             replaceData(null);
           }
         },
       );
-      return () => listener.subscription.unsubscribe();
+      return () => { cancelled = true; listener.subscription.unsubscribe(); };
     }
 
     return () => {
@@ -554,14 +565,20 @@ export default function FatLossApp() {
 
   async function upsertRemote(table: string, record: Record<string, unknown>) {
     if (isDemo || !supabase) return;
-    const result = await supabase.from(table).upsert(record).select().single();
-    if (result.error) throw result.error;
+    const conflict = table === "profiles" ? "user_id" : ["weight_records", "daily_checkins", "daily_ai_summaries"].includes(table) ? "user_id,record_date" : "id";
+    const safeRecord = record.source_snapshot === undefined ? record : { ...record, source_snapshot: scrubRuntime(record.source_snapshot) };
+    const pending = remoteSaveQueue.current.catch(() => undefined).then(() => supabase.from(table).upsert(safeRecord, { onConflict: conflict }).select().single());
+    remoteSaveQueue.current = pending;
+    const result = await pending;
+    if (result.error) { storageUnsaved.current = true; setStorageIssue("云端保存未完成，请保留当前页面并导出备份后重试。已有云端记录未清空。"); throw result.error; }
+    storageUnsaved.current = false;
+    setStorageIssue(null);
   }
 
   async function updateCheckin(patch: Partial<DailyCheckin>) {
-    if (!data) return;
+    if (!dataRef.current) return;
     const existing =
-      getRecordForDate(data.checkins, selectedDate) ??
+      getRecordForDate(dataRef.current.checkins, selectedDate) ??
       buildDefaultCheckin(userId, selectedDate);
     const tasks = normalizeTasks(patch.tasks ?? existing.tasks);
     const next: DailyCheckin = {
@@ -573,7 +590,7 @@ export default function FatLossApp() {
       completion_score: completionFromTasks(tasks),
     };
 
-    updateLocal((current) => ({
+    await updateLocal((current) => ({
       ...current,
       checkins: [
         ...current.checkins.filter((item) => item.id !== next.id),
@@ -593,9 +610,9 @@ export default function FatLossApp() {
   }
 
   async function setTask(task: keyof DailyCheckin["tasks"], value: boolean) {
-    if (!data) return;
+    if (!dataRef.current) return;
     const existing =
-      getRecordForDate(data.checkins, selectedDate) ??
+      getRecordForDate(dataRef.current.checkins, selectedDate) ??
       buildDefaultCheckin(userId, selectedDate);
     await updateCheckin({ tasks: { ...existing.tasks, [task]: value } });
   }
@@ -612,8 +629,12 @@ export default function FatLossApp() {
       showToast({ type: "error", message: "目标体重需要低于起始体重。" });
       return;
     }
-    const challenge = buildDefaultChallenge(nextProfile);
-    updateLocal((current) => ({ ...current, profile: nextProfile, challenge }));
+    if (nextProfile.age !== null && nextProfile.age !== undefined && (nextProfile.age < 18 || nextProfile.age > 100)) { showToast({ type: "error", message: "年龄请填写 18–100 岁；此减脂目标工具仅面向成年人。" }); return; }
+    if (!planningPreferencesSchema.safeParse(nextProfile.planning || {}).success) { showToast({ type: "error",message: "每天运动时间请填写 5–90 分钟，并检查计划偏好。" }); return; }
+    if (nextProfile.nutrition_targets && !nutritionTargetsSchema.safeParse(nextProfile.nutrition_targets).success) { showToast({ type: "error", message: "营养目标超出温和调整范围，请检查热量和宏量营养素。" }); return; }
+    if (!nextProfile.challenge_start_date || !nextProfile.challenge_end_date || nextProfile.challenge_end_date < nextProfile.challenge_start_date) { showToast({ type: "error", message: "挑战结束日期不能早于开始日期。" }); return; }
+    const challenge = { ...buildDefaultChallenge(nextProfile), id: dataRef.current?.challenge.id || uid() };
+    await updateLocal((current) => ({ ...current, profile: nextProfile, challenge }));
     try {
       await upsertRemote("profiles", omitRuntimeFields(nextProfile));
       await upsertRemote("challenges", omitRuntimeFields(challenge));
@@ -631,7 +652,7 @@ export default function FatLossApp() {
       showToast({ type: "error", message: "体重请输入 30-200 kg 之间。" });
       return;
     }
-    updateLocal((current) => {
+    await updateLocal((current) => {
       const profile =
         record.record_date >= todayString()
           ? { ...current.profile, current_weight_kg: record.weight_kg }
@@ -658,26 +679,25 @@ export default function FatLossApp() {
   }
 
   async function deleteWeight(record: WeightRecord) {
-    updateLocal((current) => ({
+    if (!window.confirm("确认删除这条体重记录？其他日期记录会保留。")) return;
+    if (!isDemo && supabase) {
+      const result = await supabase.from("weight_records").delete().eq("id", record.id).eq("user_id", userId);
+      if (result.error) { showToast({ type: "error", message: "云端删除失败，记录已保留。" }); return; }
+    }
+    await updateLocal((current) => ({
       ...current,
       weights: current.weights.filter((item) => item.id !== record.id),
     }));
-    if (!isDemo && supabase) {
-      const result = await supabase
-        .from("weight_records")
-        .delete()
-        .eq("id", record.id)
-        .eq("user_id", userId);
-      if (result.error) showToast({ type: "error", message: result.error.message });
-    }
+    if (record.record_date === selectedDate) await setTask("weighed", false);
   }
 
   async function saveMeal(record: MealRecord) {
     if (!record.food_name.trim()) {
       showToast({ type: "error", message: "请填写食物名称。" });
-      return;
+      return false;
     }
-    updateLocal((current) => ({
+    if (record.nutrition && !mealNutritionSchema.safeParse(record.nutrition).success) { showToast({ type: "error", message: "营养数值无效，请检查热量范围和宏量营养素。" }); return false; }
+    await updateLocal((current) => ({
       ...current,
       meals: [
         ...current.meals.filter((item) => item.id !== record.id),
@@ -688,51 +708,51 @@ export default function FatLossApp() {
       await upsertRemote("meal_records", omitRuntimeFields(record));
       if (record.meal_type !== "snack") await setTask(record.meal_type, true);
       showToast({ type: "success", message: "饮食记录已保存。" });
+      return true;
     } catch (error) {
       showToast({
         type: "error",
         message: error instanceof Error ? error.message : "保存饮食失败。",
       });
+      return false;
     }
   }
 
   async function deleteMeal(record: MealRecord) {
-    updateLocal((current) => ({
+    if (!window.confirm("确认删除这条饮食记录？照片文件仍会保留在存储中，不会自动清理。")) return;
+    if (!isDemo && supabase) {
+      const result = await supabase.from("meal_records").delete().eq("id", record.id).eq("user_id", userId);
+      if (result.error) { showToast({ type: "error", message: "云端删除失败，原有记录已保留。" }); return; }
+    }
+    await updateLocal((current) => ({
       ...current,
       meals: current.meals.filter((item) => item.id !== record.id),
     }));
-    if (!isDemo && supabase) {
-      const paths = record.images
-        .filter((image) => image.storage_path && !image.storage_path.startsWith("data:"))
-        .map((image) => image.storage_path);
-      if (paths.length) await supabase.storage.from("meal-images").remove(paths);
-      const result = await supabase
-        .from("meal_records")
-        .delete()
-        .eq("id", record.id)
-        .eq("user_id", userId);
-      if (result.error) showToast({ type: "error", message: result.error.message });
-    }
+    if (record.meal_type !== "snack" && !dataRef.current?.meals.some((meal) => meal.record_date === selectedDate && meal.meal_type === record.meal_type)) await setTask(record.meal_type, false);
     showToast({ type: "success", message: "饮食记录已删除。" });
   }
 
   async function uploadMealImages(record: MealRecord, files: FileList | null) {
-    if (!files?.length) return;
+    if (!files?.length) return false;
+    if (files.length > 6) { showToast({ type: "error",message: "单次最多上传 6 张照片，请分批添加。未丢弃任何现有照片。" }); return false; }
     setSaving(true);
     try {
       const images: MealImage[] = [];
-      for (const file of Array.from(files).slice(0, 6)) {
+      for (const file of Array.from(files)) {
         const compressed = await compressImage(file);
         if (isDemo || !supabase) {
-          const dataUrl = await fileToDataUrl(compressed);
+          const photo = await storePhoto(compressed);
           images.push({
             id: uid("image"),
             user_id: userId,
             record_date: record.record_date,
             meal_record_id: record.id,
-            storage_path: dataUrl,
-            signed_url: dataUrl,
+            ...photo,
+            signed_url: URL.createObjectURL(compressed),
             file_name: file.name,
+            size_bytes: compressed.size,
+            mime_type: compressed.type,
+            sha256: await sha256(compressed),
           });
         } else {
           const imageId = uid("image");
@@ -751,6 +771,9 @@ export default function FatLossApp() {
             meal_record_id: record.id,
             storage_path: path,
             file_name: file.name,
+            size_bytes: compressed.size,
+            mime_type: compressed.type,
+            sha256: await sha256(compressed),
           };
           const inserted = await supabase
             .from("meal_images")
@@ -767,7 +790,7 @@ export default function FatLossApp() {
           });
         }
       }
-      updateLocal((current) => ({
+      await updateLocal((current) => ({
         ...current,
         meals: current.meals.map((meal) =>
           meal.id === record.id
@@ -776,18 +799,25 @@ export default function FatLossApp() {
         ),
       }));
       showToast({ type: "success", message: "照片已压缩并上传。" });
+      return !storageUnsaved.current;
     } catch (error) {
       showToast({
         type: "error",
         message: error instanceof Error ? error.message : "上传照片失败。",
       });
+      return false;
     } finally {
       setSaving(false);
     }
   }
 
   async function deleteMealImage(record: MealRecord, image: MealImage) {
-    updateLocal((current) => ({
+    if (!window.confirm("确认移除此餐食的照片关联？原始照片文件仍保留。")) return;
+    if (!isDemo && supabase) {
+      const result = await supabase.from("meal_images").delete().eq("id", image.id).eq("user_id", userId);
+      if (result.error) { showToast({ type: "error", message: "云端删除关联失败，照片仍保留。" }); return; }
+    }
+    await updateLocal((current) => ({
       ...current,
       meals: current.meals.map((meal) =>
         meal.id === record.id
@@ -795,42 +825,45 @@ export default function FatLossApp() {
           : meal,
       ),
     }));
-    if (!isDemo && supabase) {
-      if (image.storage_path && !image.storage_path.startsWith("data:")) {
-        await supabase.storage.from("meal-images").remove([image.storage_path]);
-      }
-      const result = await supabase
-        .from("meal_images")
-        .delete()
-        .eq("id", image.id)
-        .eq("user_id", userId);
-      if (result.error) showToast({ type: "error", message: result.error.message });
-    }
   }
 
-  async function analyzeMeal(record: MealRecord) {
+  async function aiHeaders(): Promise<Record<string,string>> {
+    const token = supabase ? (await supabase.auth.getSession()).data.session?.access_token : undefined;
+    return { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) };
+  }
+
+  async function analyzeMeal(record: MealRecord, useFallback = false) {
+    if (useFallback && !window.confirm("确认使用 OpenAI 备用付费模型分析这一餐？这会单独产生调用费用。")) return;
+    if (record.ai_analysis && !window.confirm("已有保存的识别结果。确认根据当前照片和描述重新识别，并替换这一餐的估算？这会产生一次新的模型调用费用。")) return;
     setAiPendingId(record.id);
     try {
       const response = await fetch("/api/analyze-meal", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: await aiHeaders(),
         body: JSON.stringify({
+          meal_record_id: record.id,
+          reanalyze_confirmed: Boolean(record.ai_analysis),
           meal_type: mealTypeLabels[record.meal_type],
           food_name: record.food_name,
           portion: record.portion,
           notes: record.notes,
-          profile: data?.profile,
-          image_urls: record.images
-            .map((image) => image.signed_url || image.storage_path)
-            .filter(Boolean),
+          use_fallback: useFallback,
+          fallback_confirmed: useFallback,
+          image_urls: await Promise.all(record.images.slice(0,4).map(async (image) => fileToDataUrl(await compressImage(new File([await readPhoto(image)], image.file_name || "meal.jpg", { type: image.mime_type || "image/jpeg" }))))),
         }),
       });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || "AI 分析失败。");
       const analysis = mealAnalysisSchema.parse(payload.analysis);
-      const next = { ...record, ai_analysis: analysis };
+      const nutrition: MealNutrition | null = analysis.recognition_status === "recognized" && analysis.estimated_calories_min !== null && analysis.estimated_calories_max !== null && analysis.protein_g !== null && analysis.fat_g !== null && analysis.carbohydrate_g !== null ? {
+        calories_min: analysis.estimated_calories_min, calories_max: analysis.estimated_calories_max,
+        protein_g: analysis.protein_g, fat_g: analysis.fat_g, carbohydrate_g: analysis.carbohydrate_g,
+        portion_g: analysis.estimated_portion_g, source: "ai",
+      } : null;
+      const next = { ...record, ai_analysis: analysis, nutrition: record.nutrition?.source === "manual" ? record.nutrition : nutrition,
+        food_name: record.food_name === "待识别餐食" && analysis.foods.length ? analysis.foods.join("、") : record.food_name };
       await saveMeal(next);
-      showToast({ type: "success", message: "AI 分析已生成，可继续手动修改。" });
+      showToast({ type: analysis.recognition_status === "needs_info" ? "info" : "success", message: analysis.recognition_status === "needs_info" ? "暂时无法识别或判断份量，请补充清晰照片和描述。" : "AI 分析已生成，可继续手动修改。" });
     } catch (error) {
       showToast({
         type: "error",
@@ -849,7 +882,7 @@ export default function FatLossApp() {
       showToast({ type: "error", message: "请填写有效运动时长。" });
       return;
     }
-    updateLocal((current) => ({
+    await updateLocal((current) => ({
       ...current,
       exercises: [
         ...current.exercises.filter((item) => item.id !== record.id),
@@ -869,78 +902,25 @@ export default function FatLossApp() {
   }
 
   async function deleteExercise(record: ExerciseRecord) {
-    updateLocal((current) => ({
+    if (!window.confirm("确认删除这条运动记录？其他历史记录会保留。")) return;
+    if (!isDemo && supabase) {
+      const result = await supabase.from("exercise_records").delete().eq("id", record.id).eq("user_id", userId);
+      if (result.error) { showToast({ type: "error", message: "云端删除失败，记录已保留。" }); return; }
+    }
+    await updateLocal((current) => ({
       ...current,
       exercises: current.exercises.filter((item) => item.id !== record.id),
     }));
-    if (!isDemo && supabase) {
-      const result = await supabase
-        .from("exercise_records")
-        .delete()
-        .eq("id", record.id)
-        .eq("user_id", userId);
-      if (result.error) showToast({ type: "error", message: result.error.message });
-    }
+    if (!dataRef.current?.exercises.some((item) => item.record_date === selectedDate)) await setTask("exercise", false);
   }
 
-  async function generateSummary() {
+  async function exportSummary() {
     if (!data) return;
     setSummaryPending(true);
-    const trendData = movingAverage(data.weights, 7);
-    const snapshot = {
-      selectedDate,
-      profile: data.profile,
-      trend: trendData.slice(-14),
-      meals: data.meals.filter((meal) => meal.record_date === selectedDate),
-      exercises: data.exercises.filter(
-        (exercise) => exercise.record_date === selectedDate,
-      ),
-      checkin: getRecordForDate(data.checkins, selectedDate),
-    };
     try {
-      const response = await fetch("/api/daily-summary", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          profile: data.profile,
-          record_date: selectedDate,
-          weight_records: data.weights.slice(-21),
-          meals: snapshot.meals,
-          exercises: snapshot.exercises,
-          checkin: snapshot.checkin,
-          trend: snapshot.trend,
-        }),
-      });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error || "生成总结失败。");
-      const record: DailyAiSummaryRecord = {
-        id: getRecordForDate(data.summaries, selectedDate)?.id ?? uid("summary"),
-        user_id: userId,
-        record_date: selectedDate,
-        summary: payload.summary,
-        source_snapshot: snapshot,
-      };
-      updateLocal((current) => ({
-        ...current,
-        summaries: [
-          ...current.summaries.filter((item) => item.id !== record.id),
-          record,
-        ].sort((a, b) => a.record_date.localeCompare(b.record_date)),
-      }));
-      await upsertRemote("daily_ai_summaries", omitRuntimeFields(record));
-      await setTask("summary", true);
-      showToast({ type: "success", message: "今日总结已生成。" });
-    } catch (error) {
-      showToast({
-        type: "error",
-        message:
-          error instanceof Error
-            ? error.message
-            : "生成失败，仍可继续手动记录。",
-      });
-    } finally {
-      setSummaryPending(false);
-    }
+      downloadJson(JSON.stringify({ format: "lose-weight-chatgpt-summary-v1", exported_at: new Date().toISOString(), rows: summaryRows(data) }, null, 2), "lose-weight-chatgpt-summary.json");
+      showToast({ type: "success", message: "ChatGPT 摘要已导出，不含照片、健康备注和身份信息。" }, false);
+    } finally { setSummaryPending(false); }
   }
 
   if (loading) {
@@ -973,6 +953,7 @@ export default function FatLossApp() {
     );
   }
 
+  if (!data && remoteLoadError) return <main className="mx-auto max-w-xl p-6"><p role="alert" className="text-red-800">云端记录暂时无法读取：{remoteLoadError}</p><button onClick={() => { if (supabase && user) void loadRemoteData(supabase, user.id); }} className="mt-4 flex items-center gap-2 rounded border px-4 py-2"><RefreshCw className="h-4 w-4" />重新读取</button><button onClick={signOut} className="mt-4 px-4 py-2">退出登录</button></main>;
   if (!data) return null;
 
   const selectedCheckin =
@@ -991,8 +972,8 @@ export default function FatLossApp() {
       <div className="mx-auto flex max-w-7xl gap-5 px-3 py-4 sm:px-5 lg:px-8">
         <aside className="sticky top-4 hidden h-[calc(100vh-2rem)] w-56 shrink-0 rounded-lg border border-[#eadfcf] bg-white/90 p-3 shadow-sm lg:block">
           <div className="px-2 py-3">
-            <p className="text-xs font-semibold text-[#e48945]">温和减脂教练</p>
-            <h1 className="mt-1 text-xl font-bold">每日记录</h1>
+            <p className="text-xs font-semibold text-[#4f8d5f]">每日行动教练</p>
+            <p className="mt-1 text-xl font-bold">拾光计划</p>
           </div>
           <nav className="mt-4 space-y-1">
             {tabs.map((tab) => (
@@ -1008,7 +989,7 @@ export default function FatLossApp() {
             <p className="font-medium text-[#315a3c]">
               {isDemo ? "本地演示模式" : user?.email}
             </p>
-            <p className="mt-1">API Key 只在服务端环境变量中读取。</p>
+            <p className="mt-1">数据保存在本机；自托管服务尚未接入。</p>
           </div>
           <button
             onClick={signOut}
@@ -1024,6 +1005,7 @@ export default function FatLossApp() {
             selectedDate={selectedDate}
             setSelectedDate={setSelectedDate}
             isDemo={isDemo}
+            onRefresh={() => { if (supabase && user) void loadRemoteData(supabase, user.id); }}
           />
 
           {toast && <ToastMessage toast={toast} />}
@@ -1048,6 +1030,9 @@ export default function FatLossApp() {
           )}
 
           {activeTab === "today" && (
+            <div className="space-y-5">
+            <ActionPlan data={data} date={selectedDate} busy={backupBusy || saving} onDate={setSelectedDate} onGenerate={generatePlan} onUpdate={updatePlanTask} onComplete={completePlanTask} onPhoto={photographPlanMeal} onRecords={() => setActiveTab("meals")} onSettings={() => setActiveTab("settings")} />
+            <details className="plan-records"><summary>体重、饮水与身体状态 <ChevronDown className="h-4 w-4" /></summary>
             <TodayPage
               key={`today-${selectedDate}-${todayWeight?.id ?? "new"}`}
               data={data}
@@ -1063,6 +1048,8 @@ export default function FatLossApp() {
               onSetTask={setTask}
               onUpdateCheckin={updateCheckin}
             />
+            </details>
+            </div>
           )}
 
           {activeTab === "meals" && (
@@ -1072,7 +1059,7 @@ export default function FatLossApp() {
               userId={userId}
               onSaveMeal={saveMeal}
               onDeleteMeal={deleteMeal}
-              onUploadImages={uploadMealImages}
+              onUploadImages={async (record,files) => { await uploadMealImages(record,files); }}
               onDeleteImage={deleteMealImage}
               onAnalyzeMeal={analyzeMeal}
               aiPendingId={aiPendingId}
@@ -1114,7 +1101,9 @@ export default function FatLossApp() {
               selectedDate={selectedDate}
               summary={selectedSummary}
               pending={summaryPending}
-              onGenerate={generateSummary}
+              onGenerate={exportSummary}
+              isDemo={isDemo}
+              getHeaders={aiHeaders}
             />
           )}
 
@@ -1126,6 +1115,10 @@ export default function FatLossApp() {
               isDemo={isDemo}
               onExportBackup={exportBackup}
               onRestoreBackup={restoreBackup}
+              backupBusy={backupBusy}
+              backupProgress={backupProgress}
+              getAiHeaders={aiHeaders}
+              getCloudUsage={async () => cloudStorageUsage(supabase!,data)}
               onBackupError={(message) => showToast({ type: "error", message })}
             />
           )}
@@ -1273,29 +1266,33 @@ function TopBar({
   selectedDate,
   setSelectedDate,
   isDemo,
+  onRefresh,
 }: {
   selectedDate: string;
   setSelectedDate: (value: string) => void;
   isDemo: boolean;
+  onRefresh: () => void;
 }) {
   return (
-    <header className="mb-4 rounded-lg border border-[#eadfcf] bg-white px-4 py-4 shadow-sm">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+    <header className="mb-4 rounded-lg border border-[#dce5df] bg-white px-3 py-3 shadow-sm">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <p className="text-xs font-semibold text-[#e48945]">
-            {isDemo ? "本地演示数据，可配置 Supabase 切换真实账号" : "已连接 Supabase"}
+          <p className="text-[10px] font-semibold text-[#5b7b69]">
+            {isDemo ? "本地独立试用" : "旧版云端适配器"}
           </p>
-          <h2 className="mt-1 text-2xl font-bold">{formatChineseDate(selectedDate)}</h2>
+          <h2 className="mt-1 text-xl font-bold">拾光计划</h2>
+          {!isDemo && <button onClick={onRefresh} className="mt-2 flex items-center gap-1 text-sm text-[#315a3c]"><RefreshCw className="h-4 w-4" />同步最新云端记录</button>}
         </div>
-        <label className="flex items-center gap-2 rounded-md bg-[#f6efe2] px-3 py-2 text-sm font-medium">
-          补录日期
+        <label className="flex min-w-0 items-center gap-2 text-sm font-medium">
+          <span className="sr-only sm:not-sr-only">补录日期</span>
           <input
             type="date"
+            aria-label="补录日期"
             value={selectedDate}
             onChange={(event) => {
               if (event.target.value) setSelectedDate(event.target.value);
             }}
-            className="rounded border border-[#ddcfba] bg-white px-2 py-2"
+            className="max-w-[145px] rounded border border-[#d7e1db] bg-white px-1 py-2 text-sm"
           />
         </label>
       </div>
@@ -1348,15 +1345,10 @@ function MetricCard({
 function TodayPage({
   data,
   selectedDate,
-  completionScore,
-  daysLeft,
-  lost,
-  streak,
   todayWeight,
   selectedCheckin,
   onSaveWeight,
   onDeleteWeight,
-  onSetTask,
   onUpdateCheckin,
 }: {
   data: AppData;
@@ -1390,42 +1382,7 @@ function TodayPage({
 
   return (
     <div className="space-y-4">
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
-        <MetricCard
-          label="今日体重"
-          value={todayWeight ? `${todayWeight.weight_kg.toFixed(1)} kg` : "未记录"}
-          icon={Scale}
-          note="单日体重只是一帧画面，趋势更重要。"
-        />
-        <MetricCard label="距离目标" value={`${daysLeft} 天`} icon={CalendarDays} />
-        <MetricCard
-          label="累计减重"
-          value={`${lost >= 0 ? lost : 0} kg`}
-          icon={Waves}
-          note="以起始体重到近期体重估算。"
-        />
-        <MetricCard label="连续打卡" value={`${streak} 天`} icon={Check} />
-        <div className="rounded-lg border border-[#eadfcf] bg-white p-4 shadow-sm">
-          <p className="text-sm text-[#667165]">今日完成度</p>
-          <div className="mt-3 flex items-center gap-4">
-            <div
-              className="grid h-20 w-20 place-items-center rounded-full"
-              style={{
-                background: `conic-gradient(#67a56f ${completionScore * 3.6}deg, #efe4d2 0)`,
-              }}
-            >
-              <div className="grid h-14 w-14 place-items-center rounded-full bg-white text-lg font-bold">
-                {completionScore}%
-              </div>
-            </div>
-            <p className="text-sm leading-6 text-[#667165]">
-              不是追求满分，而是让可持续的小动作多一点。
-            </p>
-          </div>
-        </div>
-      </div>
-
-      <section className="grid gap-4 lg:grid-cols-[1fr_1fr]">
+      <section>
         <div className="rounded-lg border border-[#eadfcf] bg-white p-4 shadow-sm">
           <h3 className="flex items-center gap-2 text-lg font-bold">
             <Scale className="h-5 w-5 text-[#5f8d6a]" />
@@ -1505,29 +1462,14 @@ function TodayPage({
           </div>
         </div>
 
-        <div className="rounded-lg border border-[#eadfcf] bg-white p-4 shadow-sm">
-          <h3 className="text-lg font-bold">今日任务</h3>
-          <div className="mt-3 grid gap-2">
-            {taskKeys.map((key) => (
-              <button
-                key={key}
-                onClick={() => onSetTask(key, !selectedCheckin.tasks[key])}
-                className="flex min-h-11 items-center justify-between rounded-md border border-[#eadfcf] px-3 py-2 text-left text-sm transition hover:bg-[#f8f3e9]"
-              >
-                <span>{taskLabels[key]}</span>
-                {selectedCheckin.tasks[key] ? (
-                  <Check className="h-5 w-5 text-[#4f8d5f]" />
-                ) : (
-                  <Circle className="h-5 w-5 text-[#c6b89f]" />
-                )}
-              </button>
-            ))}
-          </div>
-        </div>
+
       </section>
 
       <section className="rounded-lg border border-[#eadfcf] bg-white p-4 shadow-sm">
         <h3 className="text-lg font-bold">饮水、睡眠和身体感受</h3>
+        <label className="mt-4 block text-sm font-medium">疲劳程度：{selectedCheckin.fatigue_level || 0} / 10
+          <input type="range" min="0" max="10" step="1" value={selectedCheckin.fatigue_level || 0} onChange={(event) => void onUpdateCheckin({ fatigue_level: Number(event.target.value) })} className="mt-2 w-full accent-[#4f8d5f]" />
+        </label>
         <div className="mt-4 grid gap-3 md:grid-cols-3">
           <label className="text-sm font-medium">
             饮水 ml
@@ -1613,11 +1555,11 @@ function MealsPage({
   data: AppData;
   selectedDate: string;
   userId: string;
-  onSaveMeal: (record: MealRecord) => Promise<void>;
+  onSaveMeal: (record: MealRecord) => Promise<boolean>;
   onDeleteMeal: (record: MealRecord) => Promise<void>;
   onUploadImages: (record: MealRecord, files: FileList | null) => Promise<void>;
   onDeleteImage: (record: MealRecord, image: MealImage) => Promise<void>;
-  onAnalyzeMeal: (record: MealRecord) => Promise<void>;
+  onAnalyzeMeal: (record: MealRecord, useFallback?: boolean) => Promise<void>;
   aiPendingId: string | null;
   saving: boolean;
 }) {
@@ -1669,11 +1611,11 @@ function MealGroup({
   meals: MealRecord[];
   selectedDate: string;
   userId: string;
-  onSaveMeal: (record: MealRecord) => Promise<void>;
+  onSaveMeal: (record: MealRecord) => Promise<boolean>;
   onDeleteMeal: (record: MealRecord) => Promise<void>;
   onUploadImages: (record: MealRecord, files: FileList | null) => Promise<void>;
   onDeleteImage: (record: MealRecord, image: MealImage) => Promise<void>;
-  onAnalyzeMeal: (record: MealRecord) => Promise<void>;
+  onAnalyzeMeal: (record: MealRecord, useFallback?: boolean) => Promise<void>;
   aiPendingId: string | null;
   saving: boolean;
 }) {
@@ -1690,7 +1632,7 @@ function MealGroup({
   });
 
   async function addMeal() {
-    await onSaveMeal({ ...draft, created_at: new Date().toISOString() });
+    if (!await onSaveMeal({ ...draft, created_at: new Date().toISOString() })) return;
     setDraft({
       ...draft,
       id: uid("meal"),
@@ -1748,6 +1690,22 @@ function MealGroup({
         <Plus className="h-4 w-4" />
         新增{mealTypeLabels[type]}
       </button>
+      <div className="mt-3 flex flex-wrap gap-3">
+        {([true, false] as const).map((camera) => <label key={String(camera)} className="flex min-h-11 cursor-pointer items-center gap-2 rounded-md border border-[#d9ccb8] px-3 py-2 text-sm font-semibold">
+          {camera ? <Camera className="h-4 w-4" /> : <Upload className="h-4 w-4" />}{camera ? "拍照记录" : "上传照片记录"}
+          <input aria-label={`${mealTypeLabels[type]}${camera ? "拍照记录" : "上传照片记录"}`} type="file" accept="image/*" capture={camera ? "environment" : undefined} multiple={!camera} className="sr-only" disabled={saving} onChange={async (event) => {
+            const input = event.currentTarget;
+            const files = input.files;
+            if (!files?.length) return;
+            const record = { ...draft, food_name: draft.food_name.trim() || "待识别餐食", created_at: new Date().toISOString() };
+            if (await onSaveMeal(record)) {
+              await onUploadImages(record, files);
+              setDraft({ ...draft, id: uid("meal"), food_name: "", portion: "", notes: "", images: [], ai_analysis: null });
+            }
+            input.value = "";
+          }} />
+        </label>)}
+      </div>
 
       <div className="mt-5 space-y-4">
         {meals.length === 0 && (
@@ -1755,7 +1713,7 @@ function MealGroup({
         )}
         {meals.map((meal) => (
           <MealCard
-            key={`${meal.id}-${meal.images.length}-${meal.ai_analysis ? "ai" : "manual"}`}
+            key={meal.id}
             meal={meal}
             onSaveMeal={onSaveMeal}
             onDeleteMeal={onDeleteMeal}
@@ -1782,15 +1740,20 @@ function MealCard({
   saving,
 }: {
   meal: MealRecord;
-  onSaveMeal: (record: MealRecord) => Promise<void>;
+  onSaveMeal: (record: MealRecord) => Promise<boolean>;
   onDeleteMeal: (record: MealRecord) => Promise<void>;
   onUploadImages: (record: MealRecord, files: FileList | null) => Promise<void>;
   onDeleteImage: (record: MealRecord, image: MealImage) => Promise<void>;
-  onAnalyzeMeal: (record: MealRecord) => Promise<void>;
+  onAnalyzeMeal: (record: MealRecord, useFallback?: boolean) => Promise<void>;
   aiPending: boolean;
   saving: boolean;
 }) {
   const [draft, setDraft] = useState(meal);
+  const [source,setSource] = useState(meal);
+  if (source !== meal) {
+    setSource(meal);
+    setDraft((current) => ({ ...current,images: meal.images,ai_analysis: meal.ai_analysis,nutrition: meal.nutrition,food_name: current.food_name === "待识别餐食" ? meal.food_name : current.food_name }));
+  }
 
   return (
     <article className="rounded-md border border-[#eadfcf] bg-[#fffdf8] p-3">
@@ -1883,6 +1846,7 @@ function MealCard({
           {aiPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
           AI分析
         </button>
+        <FallbackAnalysisAction disabled={aiPending} onUse={() => void onAnalyzeMeal(draft, true)} />
         <button
           onClick={() => onDeleteMeal(meal)}
           className="flex min-h-10 items-center gap-2 rounded-md border border-[#e3d3bc] px-3 py-2 text-sm font-semibold text-[#7b5b3b]"
@@ -1891,6 +1855,11 @@ function MealCard({
           删除
         </button>
       </div>
+
+      <MealNutritionEditor nutrition={draft.nutrition} onSave={async (nutrition) => {
+        setDraft({ ...draft, nutrition });
+        return onSaveMeal({ ...draft, nutrition });
+      }} />
 
       {draft.ai_analysis ? (
         <AnalysisEditor
@@ -1955,7 +1924,7 @@ function AnalysisEditor({
             热量下限
             <input
               type="number"
-              value={analysis.estimated_calories_min}
+              value={analysis.estimated_calories_min ?? ""}
               onChange={(event) =>
                 update("estimated_calories_min", asNumber(event.target.value))
               }
@@ -1966,7 +1935,7 @@ function AnalysisEditor({
             热量上限
             <input
               type="number"
-              value={analysis.estimated_calories_max}
+              value={analysis.estimated_calories_max ?? ""}
               onChange={(event) =>
                 update("estimated_calories_max", asNumber(event.target.value))
               }
@@ -2258,7 +2227,8 @@ function TrendsPage({
   setRange: (range: 7 | 30) => void;
 }) {
   const allTrend = movingAverage(data.weights, 7);
-  const trend = allTrend.slice(-range).map((item) => ({
+  const rangeStart = addDays(todayString(), 1 - range);
+  const trend = allTrend.filter((item) => item.record_date >= rangeStart && item.record_date <= todayString()).map((item) => ({
     date: item.record_date.slice(5),
     单日体重: item.weight_kg,
     "7日移动平均": item.moving_average,
@@ -2266,7 +2236,7 @@ function TrendsPage({
   }));
   const weeklyChange = calculateWeeklyChange(data.weights);
   const exerciseCount = data.exercises.filter(
-    (exercise) => daysBetween(exercise.record_date, todayString()) < 30,
+    (exercise) => daysBetween(exercise.record_date, todayString()) >= 0 && daysBetween(exercise.record_date, todayString()) < 30,
   ).length;
   const avgCompletion =
     data.checkins.length > 0
@@ -2318,7 +2288,7 @@ function TrendsPage({
               <LineChart data={trend} margin={{ top: 10, right: 18, left: 0, bottom: 0 }}>
                 <CartesianGrid stroke="#efe4d2" strokeDasharray="3 3" />
                 <XAxis dataKey="date" stroke="#788178" />
-                <YAxis domain={["dataMin - 0.6", "dataMax + 0.6"]} stroke="#788178" />
+                <YAxis domain={["dataMin - 0.6", "dataMax + 0.6"]} tickFormatter={(value) => Number(value).toFixed(1)} width={45} stroke="#788178" />
                 <Tooltip />
                 <Legend />
                 <Line
@@ -2461,12 +2431,16 @@ function CoachPage({
   summary,
   pending,
   onGenerate,
+  isDemo,
+  getHeaders,
 }: {
   data: AppData;
   selectedDate: string;
   summary?: DailyAiSummaryRecord;
   pending: boolean;
   onGenerate: () => Promise<void>;
+  isDemo: boolean;
+  getHeaders: () => Promise<Record<string,string>>;
 }) {
   const meals = data.meals.filter((meal) => meal.record_date === selectedDate);
   const exercises = data.exercises.filter(
@@ -2483,7 +2457,7 @@ function CoachPage({
               AI教练
             </h3>
             <p className="mt-1 text-sm text-[#667165]">
-              根据当天记录和近期趋势生成，不替代医疗或营养专业意见。
+              长期分析交给 ChatGPT。统计为程序计算，餐食识别结果为估算，不替代专业意见。
             </p>
           </div>
           <button
@@ -2492,7 +2466,7 @@ function CoachPage({
             className="flex min-h-11 items-center justify-center gap-2 rounded-md bg-[#f09a4a] px-4 py-2 font-semibold text-white disabled:opacity-60"
           >
             {pending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
-            生成当天总结
+            导出 ChatGPT 摘要
           </button>
         </div>
         <div className="mt-4 grid gap-3 md:grid-cols-2">
@@ -2528,8 +2502,9 @@ function CoachPage({
           )}
         </section>
       ) : (
-        <EmptyState text="还没有生成当天总结。先记录饮食、运动和身体感受，再让 AI 给出更具体的建议。" />
+        <NutritionOverview data={data} date={selectedDate} />
       )}
+      <ChatgptConnectionPanel data={data} isDemo={isDemo} getHeaders={getHeaders} />
     </div>
   );
 }
@@ -2541,38 +2516,31 @@ function SettingsPage({
   onExportBackup,
   onRestoreBackup,
   onBackupError,
+  backupBusy,
+  backupProgress,
+  getAiHeaders,
+  getCloudUsage,
 }: {
   data: AppData;
   onSaveProfile: (profile: Profile) => Promise<void>;
   isDemo: boolean;
-  onExportBackup: () => void;
-  onRestoreBackup: (backup: AppData) => boolean;
+  onExportBackup: () => Promise<void>;
+  onRestoreBackup: (backup: PreparedBackup, recordsOnly: boolean) => Promise<boolean>;
   onBackupError: (message: string) => void;
+  backupBusy: boolean;
+  backupProgress: string;
+  getAiHeaders: () => Promise<Record<string,string>>;
+  getCloudUsage: () => Promise<Awaited<ReturnType<typeof cloudStorageUsage>>>;
 }) {
   const [draft, setDraft] = useState(data.profile);
-  const [pendingBackup, setPendingBackup] = useState<AppData | null>(null);
-  const [readingBackup, setReadingBackup] = useState(false);
-
-  async function readBackupFile(file?: File) {
-    if (!file) return;
-    setReadingBackup(true);
-    try {
-      if (file.size > 20 * 1024 * 1024) throw new Error("备份文件不能超过 20 MB。");
-      setPendingBackup(parseDataBackup(JSON.parse(await file.text())));
-    } catch (error) {
-      onBackupError(error instanceof SyntaxError
-        ? "无法读取 JSON 备份文件，原有记录未修改。"
-        : error instanceof Error ? error.message : "读取备份失败。");
-    } finally {
-      setReadingBackup(false);
-    }
-  }
-
   return (
     <div className="space-y-5">
     <section className="rounded-lg border border-[#eadfcf] bg-white p-4 shadow-sm">
       <h3 className="text-lg font-bold">个人设置</h3>
+      <PlanningPreferencesEditor value={draft.planning || planningPreferencesSchema.parse({})} onChange={(planning) => setDraft({ ...draft,planning })} />
       <div className="mt-4 grid gap-3 md:grid-cols-2">
+        <label className="text-sm font-medium">年龄（岁）<input type="number" min="18" max="100" value={draft.age ?? ""} onChange={(event) => setDraft({ ...draft, age: event.target.value === "" ? null : Number(event.target.value) })} className="mt-1 w-full rounded-md border border-[#ded2be] px-3 py-3" /></label>
+        <label className="text-sm font-medium">活动水平<select value={draft.activity_level || "light"} onChange={(event) => setDraft({ ...draft, activity_level: event.target.value as Profile["activity_level"] })} className="mt-1 w-full rounded-md border border-[#ded2be] px-3 py-3">{Object.entries(activityLabels).map(([key,label]) => <option key={key} value={key}>{label}</option>)}</select></label>
         <label className="text-sm font-medium">
           性别
           <input
@@ -2730,13 +2698,17 @@ function SettingsPage({
           />
         </label>
       </div>
-      <section className="mt-5 rounded-md bg-[#f6efe2] p-4 text-sm leading-6 text-[#665f55]">
-        <h4 className="font-bold text-[#25342f]">AI API设置</h4>
-        <p className="mt-1">
-          OpenAI API Key 只能配置在服务端环境变量 <code>OPENAI_API_KEY</code>。
-          前端不会显示或保存密钥。模型可通过 <code>OPENAI_MODEL</code> 调整。
-        </p>
+      <fieldset className="mt-5 border-t border-[#eadfcf] pt-4"><legend className="text-sm font-bold">运动偏好</legend><div className="mt-3 flex flex-wrap gap-4">{exerciseTypes.map((type) => <label key={type} className="flex items-center gap-2 text-sm"><input type="checkbox" checked={(draft.exercise_preferences || []).includes(type)} onChange={(event) => setDraft({ ...draft, exercise_preferences: event.target.checked ? [...(draft.exercise_preferences || []),type] : (draft.exercise_preferences || []).filter((item) => item !== type) })} />{type}</label>)}</div></fieldset>
+      <label className="mt-4 flex items-start gap-2 text-sm"><input type="checkbox" checked={draft.needs_professional_guidance || false} onChange={(event) => setDraft({ ...draft, needs_professional_guidance: event.target.checked, nutrition_targets: event.target.checked ? null : draft.nutrition_targets })} className="mt-1" />妊娠、哺乳或有需要专业指导的营养情况；暂停自动减脂目标</label>
+      <section className="mt-5 border-t border-[#eadfcf] pt-4">
+        <h4 className="text-sm font-bold">每日营养目标</h4>
+        <p className="mt-2 text-sm text-[#667165]">{calculateNutritionTargets(draft).explanation}</p>
+        <label className="mt-3 flex items-center gap-2 text-sm"><input type="checkbox" checked={Boolean(draft.nutrition_targets)} onChange={(event) => setDraft({ ...draft, nutrition_targets: event.target.checked ? calculateNutritionTargets({ ...draft, nutrition_targets: null }).targets || { calories: 1700, protein_g: 75, fat_g: 55, carbohydrate_g: 225 } : null })} disabled={draft.needs_professional_guidance} />手动调整每日目标</label>
+        <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">{([
+          ["calories", "能量 kcal"], ["protein_g", "蛋白质 g"], ["fat_g", "脂肪 g"], ["carbohydrate_g", "碳水 g"],
+        ] as const).map(([key,label]) => <label key={key} className="text-sm">{label}<input type="number" min={key === "calories" ? 1500 : 0} value={(draft.nutrition_targets || calculateNutritionTargets(draft).targets)?.[key] ?? ""} disabled={!draft.nutrition_targets} onChange={(event) => { if (draft.nutrition_targets) setDraft({ ...draft, nutrition_targets: { ...draft.nutrition_targets, [key]: Number(event.target.value) } }); }} className="mt-1 w-full rounded-md border border-[#ded2be] px-3 py-2 disabled:bg-[#f6f5f1]" /></label>)}</div>
       </section>
+      <AiStatusPanel getHeaders={getAiHeaders} />
       <button
         onClick={() => onSaveProfile(draft)}
         className="mt-5 flex min-h-11 items-center gap-2 rounded-md bg-[#4f8d5f] px-4 py-2 font-semibold text-white"
@@ -2745,93 +2717,12 @@ function SettingsPage({
         保存设置
       </button>
     </section>
-    <section className="border-t border-[#eadfcf] px-1 pt-5">
-      <h3 className="text-lg font-bold">记录备份</h3>
-      <p className="mt-2 text-sm text-[#667165]">
-        {isDemo ? "本地记录保存在此浏览器中，备份包含餐食照片。" : "当前记录已连接云端。导出文件包含记录与照片路径，照片文件仍保存在云端。"}
-      </p>
-      <div className="mt-3 flex flex-wrap gap-x-5 gap-y-2 text-sm text-[#667165]">
-        <span>体重 {data.weights.length} 条</span>
-        <span>饮食 {data.meals.length} 条</span>
-        <span>运动 {data.exercises.length} 条</span>
-        <span>打卡 {data.checkins.length} 天</span>
-        <span>总结 {data.summaries.length} 条</span>
-      </div>
-      <div className="mt-4 flex flex-wrap gap-3">
-        <button onClick={onExportBackup} className="flex min-h-11 items-center gap-2 rounded-md border border-[#d9ccb8] bg-white px-4 py-2 text-sm font-semibold">
-          <Download className="h-4 w-4" />导出备份
-        </button>
-        {isDemo && (
-          <label className={classNames("flex min-h-11 cursor-pointer items-center gap-2 rounded-md border border-[#d9ccb8] bg-white px-4 py-2 text-sm font-semibold", readingBackup && "opacity-60")}>
-            {readingBackup ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
-            导入备份
-            <input
-              aria-label="导入备份"
-              type="file"
-              accept=".json,application/json"
-              className="sr-only"
-              disabled={readingBackup}
-              onChange={(event) => {
-                void readBackupFile(event.target.files?.[0]);
-                event.target.value = "";
-              }}
-            />
-          </label>
-        )}
-      </div>
-    </section>
-    {pendingBackup && (
-      <BackupRestoreDialog
-        backup={pendingBackup}
-        onCancel={() => setPendingBackup(null)}
-        onConfirm={() => {
-          if (onRestoreBackup(pendingBackup)) {
-            setDraft({ ...pendingBackup.profile, id: data.profile.id, user_id: data.profile.user_id });
-            setPendingBackup(null);
-          }
-        }}
-      />
-    )}
+    <DataStoragePanel data={data} isDemo={isDemo} busy={backupBusy} progress={backupProgress} onExport={onExportBackup} onRestore={onRestoreBackup} onError={onBackupError} getCloudUsage={getCloudUsage} />
+    <ChatgptConnectionPanel data={data} isDemo={isDemo} getHeaders={getAiHeaders} />
     </div>
   );
 }
 
-function BackupRestoreDialog({ backup, onCancel, onConfirm }: {
-  backup: AppData;
-  onCancel: () => void;
-  onConfirm: () => void;
-}) {
-  const dialog = useRef<HTMLDialogElement>(null);
-  useEffect(() => {
-    const element = dialog.current;
-    element?.showModal();
-    return () => element?.close();
-  }, []);
-  const cloudImages = backup.meals.flatMap((meal) => meal.images).filter((image) => !image.storage_path.startsWith("data:image/"));
-  return (
-    <dialog
-      ref={dialog}
-      aria-labelledby="restore-title"
-      onCancel={onCancel}
-      className="m-auto max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] max-w-md overflow-y-auto rounded-lg border border-[#eadfcf] bg-white p-5 text-[#25342f] backdrop:bg-black/40"
-    >
-      <h3 id="restore-title" className="text-lg font-bold">确认恢复备份</h3>
-      <dl className="mt-4 grid grid-cols-2 gap-3 text-sm">
-        <dt>体重记录</dt><dd>{backup.weights.length} 条</dd>
-        <dt>饮食记录</dt><dd>{backup.meals.length} 条</dd>
-        <dt>运动记录</dt><dd>{backup.exercises.length} 条</dd>
-        <dt>每日打卡</dt><dd>{backup.checkins.length} 天</dd>
-        <dt>AI 总结</dt><dd>{backup.summaries.length} 条</dd>
-      </dl>
-      <p className="mt-4 text-sm leading-6 text-[#667165]">未重复的记录会保留；相同日期的体重、打卡和总结采用备份内容，个人设置也会恢复。恢复前会自动导出当前记录。</p>
-      {cloudImages.length > 0 && <p className="mt-3 text-sm text-amber-800">此备份含 {cloudImages.length} 张云端照片的路径，不含照片文件，导入本地后无法显示这些照片。</p>}
-      <div className="mt-5 flex justify-end gap-3">
-        <button autoFocus onClick={onCancel} className="min-h-11 rounded-md border border-[#d9ccb8] px-4 py-2 text-sm font-semibold">取消</button>
-        <button onClick={onConfirm} className="flex min-h-11 items-center gap-2 rounded-md bg-[#4f8d5f] px-4 py-2 text-sm font-semibold text-white"><Upload className="h-4 w-4" />合并恢复</button>
-      </div>
-    </dialog>
-  );
-}
 
 function calculateWeeklyChange(weights: WeightRecord[]) {
   const trend = movingAverage(weights, 7);

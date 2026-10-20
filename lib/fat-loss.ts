@@ -1,4 +1,5 @@
 import type { DailySummary, MealAnalysis } from "./schemas";
+import type { PlanningPreferences, TaskUpdate, WeekPlan } from "./plan-types";
 import { addDays as shiftDays, differenceInCalendarDays, format, parseISO } from "date-fns";
 
 export type MealType = "breakfast" | "lunch" | "dinner" | "snack";
@@ -72,8 +73,25 @@ export type Profile = {
   is_menstrual_period: boolean;
   ai_enabled: boolean;
   ai_model: string;
+  age?: number | null;
+  activity_level?: "sedentary" | "light" | "moderate" | "active";
+  exercise_preferences?: ExerciseType[];
+  nutrition_targets?: NutritionTargets | null;
+  needs_professional_guidance?: boolean;
+  planning?: PlanningPreferences;
   created_at?: string;
   updated_at?: string;
+};
+
+export type NutritionTargets = { calories: number; protein_g: number; fat_g: number; carbohydrate_g: number };
+export type MealNutrition = {
+  calories_min: number;
+  calories_max: number;
+  protein_g: number;
+  fat_g: number;
+  carbohydrate_g: number;
+  portion_g: number | null;
+  source: "manual" | "ai";
 };
 
 export type Challenge = {
@@ -115,6 +133,9 @@ export type MealImage = {
   storage_path: string;
   signed_url?: string;
   file_name?: string;
+  size_bytes?: number;
+  mime_type?: string;
+  sha256?: string;
   created_at?: string;
   updated_at?: string;
 };
@@ -128,12 +149,15 @@ export type MealRecord = {
   portion: string;
   notes: string;
   ai_analysis: MealAnalysis | null;
+  nutrition?: MealNutrition | null;
+  plan_task_id?: string;
   images: MealImage[];
   created_at?: string;
   updated_at?: string;
 };
 
 export type ExerciseRecord = {
+  plan_task_id?: string;
   id: string;
   user_id: string;
   record_date: string;
@@ -160,6 +184,7 @@ export type DailyCheckin = {
   bowel_movement: boolean;
   menstrual_period: boolean;
   completion_score: number;
+  fatigue_level?: number;
   created_at?: string;
   updated_at?: string;
 };
@@ -182,6 +207,8 @@ export type AppData = {
   exercises: ExerciseRecord[];
   checkins: DailyCheckin[];
   summaries: DailyAiSummaryRecord[];
+  plans?: WeekPlan[];
+  task_updates?: TaskUpdate[];
 };
 
 export function formatDate(date: Date) {
@@ -245,6 +272,11 @@ export function buildDefaultProfile(userId: string): Profile {
     is_menstrual_period: false,
     ai_enabled: true,
     ai_model: "由服务端 OPENAI_MODEL 控制",
+    age: null,
+    activity_level: "light",
+    exercise_preferences: ["步行", "力量训练"],
+    nutrition_targets: null,
+    needs_professional_guidance: false,
   };
 }
 
