@@ -1,132 +1,104 @@
-# 温和减脂记录与指导应用
+# lose-weight V2
 
-一个中文网页端减脂记录工具，面向小基数减脂用户。支持每日体重、饮食照片、餐食 AI 粗略分析、运动、不适提醒、趋势图、月历打卡、个人设置和每日 AI 教练总结。
+中文减脂记录工具。小程序负责餐食识别、确定性统计和数据保存；长期分析由用户自己的 ChatGPT 承担。V2 基于 `94da171`，开发分支 `codex/lose-weight-v2`，不自动部署、不合并 main。
 
-## 功能
+## 技术栈
 
-- Supabase 邮箱注册/登录，数据按 `user_id` 隔离。
-- 体重、饮食、餐食照片、运动、饮水、睡眠、身体感受和每日任务记录。
-- 餐食图片上传前压缩，真实环境保存到 Supabase Storage 私有桶 `meal-images`。
-- 饮食 AI 分析返回结构化 JSON，热量显示为范围，并提示“根据照片和描述估算，存在误差”。
-- 每日 AI 总结包含体重解释、饮食、运动、改进重点、明日饮食和训练建议。
-- 趋势页明确区分“单日体重”和“7日移动平均体重”，支持 7 日/30 日视图。
-- 日历页用绿色、黄色、灰色展示完成状态，用温和图标提示体重波动。
-- 未配置 Supabase 时自动进入本地演示模式，便于查看界面和基础交互。
-- 设置页支持 JSON 备份导出；本地模式可预览并合并恢复备份，恢复前自动导出原有记录。
-- 本地存储读取失败时保留原始记录，写入失败时提示导出备份。日期按浏览器本地日期记录，移动平均按最近 7 个自然日计算。
+Next.js 16.4、React 19、TypeScript、Tailwind CSS、Recharts、Supabase Auth/PostgreSQL/私有 Storage。ZIP 使用 fflate，演示照片使用 IndexedDB。Google OAuth 使用官方 google-auth-library，MCP 使用官方 TypeScript SDK。
 
-## 当前开发进度
+## 独立本地试用
 
-第一版的今日、饮食、运动、趋势、日历、AI 教练和设置页面已实现。Supabase 登录、数据库、照片存储和 OpenAI 接口已写好，但实际启用仍需配置对应服务并联调。没有配置服务时，记录保存在当前浏览器中，不能跨设备同步。
-
-2026-10-12：补充本地备份与恢复、存储异常保护，以及本地日期和自然日趋势计算。生产构建、自动化测试和桌面/手机浏览器验证已通过；本轮新版尚未部署到服务器，服务器 SSH 连接仍需恢复。现有公网域名复查返回 `200 OK`。
-
-上次服务器部署使用 `https://slim.vidaxl.space/`，Nginx 转发到 `127.0.0.1:43113`，应用由 `gentle-fat-loss-coach.service` 管理。运行目录为 `/home/ubuntu/apps/gentle-fat-loss-coach/current`，使用 Next.js standalone 构建。服务器不需要安装完整开发依赖。
-
-## 本地启动
-
-```bash
-npm install
-npm run dev
-```
-
-打开开发服务器输出的本地地址，通常是：
-
-```text
-http://localhost:3000
-```
-
-生产构建：
-
-```bash
-npm run build
-npm run start
-```
-
-OpenAI Sites/Cloudflare Worker 备用构建：
-
-```bash
-npm run build:sites
-```
-
-基础测试：
-
-```bash
-npm test
-```
-
-## 环境变量
-
-复制 `.env.example` 为 `.env.local`，填入真实值：
-
-```bash
-NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
-NEXT_PUBLIC_SUPABASE_ANON_KEY=your-supabase-anon-key
-OPENAI_API_KEY=sk-your-openai-api-key
-OPENAI_MODEL=gpt-5.6
-```
-
-注意：
-
-- `NEXT_PUBLIC_SUPABASE_URL` 和 `NEXT_PUBLIC_SUPABASE_ANON_KEY` 会进入前端，这是 Supabase 的正常用法。
-- `OPENAI_API_KEY` 只能放服务端环境变量，不要添加 `NEXT_PUBLIC_` 前缀。
-- AI 模型可通过 `OPENAI_MODEL` 调整。
-
-## Supabase 初始化
-
-1. 创建 Supabase 项目。
-2. 在 SQL Editor 中执行 `supabase/schema.sql`。
-3. 在 Authentication 中启用邮箱登录。
-4. 确认 Storage 中存在私有 bucket：`meal-images`。SQL 会自动创建并配置策略。
-5. 将项目 URL 和 anon key 写入 `.env.local`。
-
-数据库包含：
-
-- `profiles`
-- `challenges`
-- `weight_records`
-- `meal_records`
-- `meal_images`
-- `exercise_records`
-- `daily_checkins`
-- `daily_ai_summaries`
-
-每张业务表都启用了 RLS，策略限制用户只能读取、创建、更新和删除自己的数据。
-
-## OpenAI 接口
-
-服务端接口位置：
-
-- `app/api/analyze-meal/route.ts`
-- `app/api/daily-summary/route.ts`
-
-两个接口都使用 OpenAI Responses API，并校验结构化 JSON。AI 请求失败时，前端会显示错误提示，但不会影响手动记录。
-
-## 部署
-
-推荐部署到 Vercel。导入 GitHub 仓库后，Vercel 会运行：
+需要 Node.js >=22.13（建议 Node 24）。
 
 ```bash
 npm ci
-npm run build
+npm run preview:v2
 ```
 
-需要在 Vercel 项目中配置同样的环境变量：
+启动脚本强制清空 Supabase、AI、Google 和服务端连接密钥，使用独立 `.next-v2` 构建，只监听本机。默认地址 http://127.0.0.1:3004/；端口占用时自动寻找下一个可用端口，以终端输出为准。不同端口的数据相互隔离，不读取原 3003 预览的数据，也不连接生产数据库。
 
-- `NEXT_PUBLIC_SUPABASE_URL`
-- `NEXT_PUBLIC_SUPABASE_ANON_KEY`
-- `OPENAI_API_KEY`
-- `OPENAI_MODEL`
+```bash
+npm run build:v2
+npm run test:unit
+npm run test:browser
+```
 
-如果使用 OpenAI Sites/Cloudflare Worker 运行，请使用 `npm run build:sites`。无论部署到哪里，都请在托管平台的环境变量设置中保存密钥，不要把真实密钥提交到仓库。
+浏览器验收脚本要求本地预览正在运行，使用隔离浏览器上下文并阻止外部请求。可设置 `PLAYWRIGHT_MODULE_PATH`、`CHROME_PATH`、`PREVIEW_URL`；截图和运行数据写入忽略的 `outputs/v2-acceptance`。也可安装本地 Playwright 并运行 `npx playwright install chromium`。
 
-## 模拟数据说明
+## 数据与备份
 
-未配置 Supabase 环境变量时，应用会进入“本地演示模式”：
+- 账号模式的唯一主数据库是 Supabase PostgreSQL；真实照片只存私有 `meal-images` 桶。没有另建 VPS 数据库。
+- 本地演示不等于云同步。IndexedDB 保存记录、照片和恢复快照；旧 localStorage Base64 照片在原始快照保留、事务成功后迁移。
+- 上传压缩为 JPEG，最长边 1200px，目标约 280KB；单次最多 6 张。识别单次最多 4 张，每张最多 300KB。
+- 设置提供完整 ZIP 导出、导入、预览与容量估计。ZIP 包含 `manifest.json`、`records.json`、真实 `images/` 文件，校验 SHA-256 和关联。
+- 不导出临时签名 URL、API Key、Google OAuth 凭证或 MCP 凭证。物理保留的未关联照片也包含在 ZIP 中。
+- 恢复先下载当前完整 ZIP，再经用户确认合并。相同日期的体重/打卡/总结及相同 ID 的记录采用备份内容，个人设置恢复；未重复记录保留。云端结构化恢复使用单个 PostgreSQL 事务。
+- 支持旧 JSON；只有路径而没有照片内容时必须明确选择仅合并记录。损坏 ZIP、缺图、容量不足、恢复中断都会停止并给出提示。
+- 任何清理都不会自动删除历史数据或照片文件。200MB 和 10000 张是本版本 ZIP 处理上限，不是 Supabase 账户容量。
 
-- 使用浏览器 `localStorage` 保存一份演示记录，刷新不会丢失。
-- 不会进行真实注册/登录。
-- 不会真实上传到 Supabase Storage。
-- 如果配置了 `OPENAI_API_KEY`，AI 接口仍可被前端调用；否则会显示服务端未配置提示。
+## 独立 Supabase 测试配置
 
-配置 Supabase 后会切换到真实用户、真实数据库和真实图片存储。
+当前没有测试项目，实云账号登录及跨设备验收尚待配置。甲骨文 VPS 将来可以运行网页/API，但不能替代 Supabase。请先创建独立测试项目，不要使用正式数据。
+
+在测试项目按顺序执行：
+
+1. `supabase/schema.sql`（新项目初始结构）。
+2. `supabase/migrations/20261012_v2.sql`。
+3. `supabase/migrations/20261014_connections.sql`。
+
+启用邮箱认证；确认 `meal-images` 为私有桶。配置 `.env.local` 的 Supabase URL 和 anon key。URL/anon key 可进入前端，其余服务密钥绝不能加 `NEXT_PUBLIC_` 前缀。测试账号模式使用 `npm run dev -- --port 3005`，并将 `APP_ORIGIN` 设置为相同地址。
+
+## 低成本餐食识别
+
+```dotenv
+AI_PROVIDER=deepseek
+DEEPSEEK_API_KEY=
+DEEPSEEK_MODEL=deepseek-flash
+AI_DAILY_USER_LIMIT=20
+AI_GLOBAL_DAILY_LIMIT=100
+AI_MAX_OUTPUT_TOKENS=1200
+AI_ALLOW_OPENAI_FALLBACK=false
+```
+
+DeepSeek 只接收餐食图片和餐食描述，不接收个人资料。需要有效 Supabase 登录和已保存的餐食；结果在服务端持久化后才返回，已保存结果直接复用。缺少食物/份量信息时数值置空，允许手动改名、重量和营养。
+
+认证、数据库调用预留、10 秒调用间隔、每天每用户最多 20 次/全站最多 100 次、输出最多 1500 Tokens、30 秒超时共同保护费用。服务端可进一步降低上限。失败不会自动重试。密钥没配置时仍可手动记录和计算营养目标。
+
+OpenAI 仅作为明确启用并逐次确认的可选餐食备用服务。营养累计、目标进度、下一餐及基础恢复建议不调用任何模型。`/api/daily-summary` 返回 410，保留已有历史总结，不再支付第二份总结费用。
+
+## ChatGPT 数据连接
+
+Google 摘要同步默认关闭，需要用户在设置中勾选隐私授权、完成 Google OAuth，再开启同步。授权回调仍保持关闭状态。
+
+服务端配置：
+
+```dotenv
+APP_ORIGIN=http://127.0.0.1:3005
+SUPABASE_SERVICE_ROLE_KEY=
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=
+INTEGRATION_ENCRYPTION_KEY=
+```
+
+加密密钥为 32 随机字节的 64 位十六进制编码，可用 `node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"` 本地生成。不要提交密钥。
+
+Google Cloud 启用 Sheets API、配置 Web OAuth 客户端，并登记 `APP_ORIGIN/api/connections/google/callback` 为回调。仅申请 `drive.file`，为该应用创建独立私有摘要表；不会编辑其他表格或更改共享权限。OAuth state、PKCE、一次性过期状态和 HttpOnly cookie 保护授权。凭证经 AES-256-GCM 加密保存于仅服务端可访问的 Supabase 表。
+
+摘要仅包含日期、体重、餐次、热量范围、宏量营养、未知餐次数、运动时长/次数和目标。没有照片、食物细节、健康备注、姓名、邮箱或账号 ID。开启后云端保存触发合并同步，也可立即同步；关闭停止后续同步，已发送的数据仍保留在用户自己的表格中。正在进行的网络请求可能已经完成。ChatGPT 需要用户自己的 Google Drive 连接读取该私有表；本次未向实际 Google 账号写入数据。
+
+MCP 提供 `/api/mcp` 的无状态 JSON Streamable HTTP，只包含：
+
+- `daily_records`：一天的体重、营养和运动统计。
+- `seven_day_nutrition`：最近七个自然日。
+- `weight_trend`：最多 365 天。
+- `exercise_history`：最多 90 天，排除健康备注。
+
+用户确认后生成 90 天只读 Bearer 凭证，仅显示一次，数据库仅存 SHA-256；可立即撤销，更新凭证会使旧凭证失效。每分钟最多 60 次。接口没有修改/删除工具。所有读取按凭证绑定的用户过滤，前端传入的用户 ID 不被接受。
+
+当前 MCP 可供支持自定义 Bearer 的客户端联调。ChatGPT 原生远程连接还需要公开 HTTPS 地址、其要求的 OAuth/资源发现流程及真实客户端验收，属于后续接入工作；不能把本地地址宣称为已完成 ChatGPT 连接。
+
+## 验收与上线边界
+
+详见 `docs/V2_TEST_REPORT.md`。本地、模拟客户端和嵌入式 PostgreSQL 测试不是实云验收；真实 Supabase、Google OAuth 和 DeepSeek 识别准确度在测试配置完成后补测。
+
+本分支不执行服务器登录、生产数据库迁移、线上部署或 main 合并。历史部署域名为 `slim.vidaxl.space`，此版本未修改该站点。

@@ -16,8 +16,8 @@ test("contains the expected app surfaces", async () => {
   assert.match(app, /AI分析/);
   assert.match(app, /7日移动平均/);
   assert.match(app, /本地演示模式/);
-  assert.match(mealApi, /OPENAI_API_KEY/);
-  assert.match(summaryApi, /dailySummarySchema/);
+  assert.match(mealApi, /handleAiRequest\(request, "meal"\)/);
+  assert.match(summaryApi, /handleAiRequest\(request, "summary"\)/);
 });
 
 test("includes Supabase schema and deployment documentation", async () => {
