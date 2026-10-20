@@ -18,6 +18,7 @@ export function NutritionOverview({ data, date }: { data: AppData; date: string 
         <p className="font-semibold">已摄入估计 {Math.round(intake.calories_min)}–{Math.round(intake.calories_max)} kcal</p>
       </div>
       <p className="mt-1 text-xs text-[#667165]">{explanation}{intake.unknown > 0 ? ` 还有 ${intake.unknown} 餐营养未完整填写，当前合计不代表全天摄入。` : ""}</p>
+      <p className="mt-1 text-xs text-[#667165]">营养累计只基于已确认的饮食记录；任务打勾不会虚构摄入，空白不代表没有吃。</p>
       <div className="mt-4 grid gap-4 sm:grid-cols-3">
         {[
           { label: "蛋白质", value: intake.protein_g, goal: targets?.protein_g, color: "#438e74" },

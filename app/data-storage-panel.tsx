@@ -98,6 +98,7 @@ function BackupPreview({ backup, filename, mode, busy, onCancel, onRestore }: {
         <dt>体重 / 饮食</dt><dd>{counts.weights} / {counts.meals} 条</dd>
         <dt>运动 / 打卡</dt><dd>{counts.exercises} / {counts.checkins} 条</dd>
         <dt>AI 总结</dt><dd>{counts.summaries} 条</dd>
+        <dt>周计划 / 执行调整</dt><dd>{counts.plans} / {counts.task_updates} 份</dd>
         <dt>照片文件</dt><dd>{backup.photos.size} / {counts.photos} 张</dd>
         {Boolean(backup.retainedPhotos?.size) && <><dt>保留的未关联照片</dt><dd>{backup.retainedPhotos!.size} 份</dd></>}
         <dt>校验状态</dt><dd>{backup.format === "zip" ? "文件清单、SHA-256、关联校验通过" : "JSON 记录格式通过"}</dd>

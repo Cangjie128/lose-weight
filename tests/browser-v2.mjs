@@ -51,13 +51,15 @@ async function layout(label) {
 try {
   const start = Date.now(); await page.goto(url); await page.getByText("本地演示模式",{ exact: true }).waitFor(); metrics.initial_load_ms = Date.now()-start;
   assert.equal((await saved()).weights.length,30);
+  await page.locator(".plan-records > summary").click();
   await page.getByLabel("体重 kg",{ exact: true }).fill("54.8"); await page.getByRole("button",{ name: "保存体重",exact: true }).click();
   await until(async () => (await saved()).weights.find((record) => record.record_date === todayString()).weight_kg === 54.8);
-  await page.reload(); assert.equal(await page.getByLabel("体重 kg",{ exact: true }).inputValue(),"54.8");
+  await page.reload(); await page.locator(".plan-records > summary").click(); assert.equal(await page.getByLabel("体重 kg",{ exact: true }).inputValue(),"54.8");
   results.push("30 calendar days load; weight save and refresh persistence pass.");
   await page.screenshot({ path: path.join(output,"today-desktop.png"),fullPage: true }); await layout("desktop today");
 
   await nav("饮食");
+  console.log("Acceptance: meal creation and manual nutrition");
   const breakfast = page.locator("section").filter({ has: page.getByRole("heading",{ name: "早餐",exact: true }) }).last();
   await breakfast.getByLabel("食物名称",{ exact: true }).fill("测试鸡蛋燕麦"); await breakfast.getByLabel("分量",{ exact: true }).fill("200g");
   await breakfast.getByRole("button",{ name: "新增早餐",exact: true }).click(); await until(async () => (await saved()).meals.length === 1);
@@ -65,6 +67,7 @@ try {
   await meal.locator("summary").filter({ hasText: "营养数值" }).click();
   for (const [label,value] of [["食物重量 g（可选）","200"],["热量下限 kcal","400"],["热量上限 kcal","500"],["蛋白质 g","25"],["脂肪 g","15"],["碳水 g","60"]]) await meal.getByLabel(label,{ exact: true }).fill(value);
   await meal.getByRole("button",{ name: "保存营养数值",exact: true }).click(); await until(async () => (await saved()).meals[0].nutrition?.protein_g === 25);
+  console.log("Acceptance: compressing and storing 100 photos");
   const photos = await page.evaluate(() => Array.from({ length: 100 },(_,index) => {
     const canvas = document.createElement("canvas"); canvas.width = index === 0 ? 2400 : 320; canvas.height = index === 0 ? 1600 : 240;
     const ctx = canvas.getContext("2d"); ctx.fillStyle = "#ebf2f7"; ctx.fillRect(0,0,canvas.width,canvas.height);
@@ -78,12 +81,13 @@ try {
     const files = photos.slice(index,index+6).map((base64,offset) => ({ name: `meal-${index+offset}.jpg`,mimeType: "image/jpeg",buffer: Buffer.from(base64,"base64") }));
     await meal.locator('input[type="file"]').setInputFiles(files);
     await until(async () => (await saved()).meals[0].images.length === Math.min(100,index+6),60000);
+    console.log(`Acceptance: ${Math.min(100,index+6)}/100 photos`);
   }
   metrics.upload_100_ms = Date.now()-uploadStart;
   assert.equal(await meal.locator('img[alt="餐食照片"]').count(),100);
   assert.ok((await saved()).meals[0].images.every((image) => image.size_bytes <= 300*1024 && image.storage_path.startsWith("idb:")));
   assert.equal(await page.evaluate(() => localStorage.getItem("gentle-fat-loss-coach-demo-data").includes("base64")),false);
-  await nav("今日"); await page.getByText("已摄入估计 400–500 kcal",{ exact: true }).waitFor();
+  await nav("今日"); await page.locator(".plan-nutrition > summary").click(); await page.getByText("已摄入估计 400–500 kcal",{ exact: true }).waitFor();
   assert.equal(await page.getByRole("progressbar",{ name: "蛋白质摄入进度" }).getAttribute("value"),"25");
   results.push("100 actual JPEG uploads, <=1200px compression, IndexedDB storage and deterministic macro progress pass.");
 
@@ -111,7 +115,7 @@ try {
   await page.getByRole("dialog").waitFor();
   const beforeDownload = page.waitForEvent("download"); await page.getByRole("button",{ name: "合并恢复",exact: true }).click();
   await (await beforeDownload).saveAs(path.join(output,"pre-restore.zip"));
-  await page.getByText("完整备份已合并恢复，恢复前 ZIP 已导出。",{ exact: true }).waitFor();
+  await page.getByRole("dialog").waitFor({ state: "hidden" });
   const secondBytes = await download("导出完整 ZIP 备份","second.zip");
   const second = await inspectBackup(new Blob([secondBytes]),"second.zip");
   assert.deepEqual(second.data,first.data); assert.deepEqual(second.manifest.files,first.manifest.files);
@@ -141,7 +145,7 @@ try {
   await writeFile(path.join(output,"results.json"),JSON.stringify({ results,metrics,page_errors: failures,external_requests: external },null,2));
   console.log(JSON.stringify({ results,metrics,page_errors: failures,external_requests: external },null,2));
 } catch(error) {
-  await page.screenshot({ path: path.join(output,"failure.png"),fullPage: true });
+  await page.screenshot({ path: path.join(output,"failure.png"),fullPage: true,timeout: 10000 }).catch(() => undefined);
   await writeFile(path.join(output,"failure.json"),JSON.stringify({ message: error.message,results,metrics,page_errors: failures },null,2));
   throw error;
 } finally { await context.close(); await browser.close(); }

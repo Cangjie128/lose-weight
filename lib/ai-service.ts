@@ -32,6 +32,7 @@ export function aiConfiguration(useFallback = false, confirmed = false) {
 export async function authenticateAi(request: Request): Promise<{ client: SupabaseClient; userId: string }> {
   const token = request.headers.get("authorization")?.match(/^Bearer (\S+)$/i)?.[1];
   if (!token) throw new AiError("请先登录账号，再使用 AI 分析。手动记录不受影响。", 401, "AUTH_REQUIRED");
+  if (process.env.NEXT_PUBLIC_DATA_BACKEND !== "legacy-supabase") throw new AiError("本地试用未接入自托管账号与调用预算服务，付费识别保持关闭。手动记录和计划不受影响。",503,"SELFHOST_AUTH_PENDING");
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
   if (!url || !anonKey || url.includes("your-project")) throw new AiError("服务端尚未配置账号认证，AI 付费调用已关闭。", 503, "AUTH_NOT_CONFIGURED");

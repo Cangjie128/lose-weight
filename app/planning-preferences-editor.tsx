@@ -1,0 +1,11 @@
+"use client";
+import type { PlanningPreferences } from "@/lib/plan-types";
+const selects = [
+  { key: "diet",label: "饮食类型",values: [["balanced","荤素搭配"],["vegetarian","蛋奶素"],["vegan","纯素"]] },
+  { key: "cooking",label: "用餐条件",values: [["home","可以自己准备"],["canteen","食堂或外食"]] },
+  { key: "environment",label: "运动场地",values: [["home","家中"],["outdoor","户外"],["gym","健身房"],["seated","暂时仅适合坐姿或恢复"]] },
+  { key: "equipment",label: "可用器材",values: [["none","无器材"],["chair","稳固椅子和墙面"],["dumbbells","有轻哑铃，先练基础动作"]] },
+] as const;
+export default function PlanningPreferencesEditor({ value,onChange }: { value: PlanningPreferences;onChange: (next: PlanningPreferences) => void }) {
+  return <fieldset className="mt-5 border-y border-[#dce5df] py-4"><legend className="text-sm font-bold">让计划贴近日常</legend><div className="grid gap-3 sm:grid-cols-2">{selects.map((item) => <label key={item.key} className="text-sm">{item.label}<select aria-label={item.label} value={value[item.key]} onChange={(event) => onChange({ ...value,[item.key]: event.target.value })} className="mt-1 min-h-11 w-full rounded-md border border-[#cfdcd4] px-3 py-2">{item.values.map(([key,label]) => <option key={key} value={key}>{label}</option>)}</select></label>)}<label className="text-sm">每天可安排运动分钟<input type="number" min={5} max={90} value={value.available_minutes} onChange={(event) => onChange({ ...value,available_minutes: Number(event.target.value) })} className="mt-1 min-h-11 w-full rounded-md border border-[#cfdcd4] px-3 py-2" /></label><label className="text-sm">过敏或必须避免的食物<input maxLength={1000} value={value.allergies} onChange={(event) => onChange({ ...value,allergies: event.target.value })} placeholder="例如：牛奶、鸡蛋、大豆" className="mt-1 min-h-11 w-full rounded-md border border-[#cfdcd4] px-3 py-2" /></label><label className="text-sm sm:col-span-2">身体限制或需要避开的活动<textarea maxLength={1000} value={value.limitations} onChange={(event) => onChange({ ...value,limitations: event.target.value })} placeholder="填写后，基础计划优先安排恢复，并建议进一步确认适合的活动。" className="mt-1 min-h-20 w-full rounded-md border border-[#cfdcd4] px-3 py-2" /></label></div><p className="mt-3 text-xs leading-6 text-[#637568]">保存后，可在本周总览中更新尚未开始的任务。过敏筛选不能代替配料核查或专业意见。</p></fieldset>;
+}

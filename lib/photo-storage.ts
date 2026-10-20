@@ -223,7 +223,7 @@ export async function localStorageUsage(data: AppData) {
   const linked = data.meals.flatMap((meal) => meal.images);
   const estimate = typeof navigator !== "undefined" ? await navigator.storage?.estimate?.() : undefined;
   return {
-    records: data.weights.length + data.meals.length + data.exercises.length + data.checkins.length + data.summaries.length,
+    records: data.weights.length + data.meals.length + data.exercises.length + data.checkins.length + data.summaries.length + (data.plans?.length || 0) + (data.task_updates?.length || 0),
     photoCount: linked.length,
     storedPhotoCount: photos.length,
     photoBytes: photos.reduce((bytes, photo) => bytes + photo.blob.size, 0),

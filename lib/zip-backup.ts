@@ -15,7 +15,7 @@ const manifestSchema = z.object({
   files: z.array(fileSchema).max(10001),
   images: z.array(z.object({ id: z.string(), meal_record_id: z.string(), path: z.string(), mime_type: z.enum(["image/jpeg", "image/png", "image/webp"]), bytes: z.number().int().nonnegative(), sha256: hashSchema })).max(10000),
   retained_images: z.array(z.object({ key: z.string().max(1000), path: z.string(), mime_type: z.enum(["image/jpeg", "image/png", "image/webp"]), bytes: z.number().int().nonnegative(), sha256: hashSchema })).max(10000).default([]),
-  counts: z.object({ weights: z.number().int(), meals: z.number().int(), exercises: z.number().int(), checkins: z.number().int(), summaries: z.number().int(), photos: z.number().int() }),
+  counts: z.object({ weights: z.number().int(), meals: z.number().int(), exercises: z.number().int(), checkins: z.number().int(), summaries: z.number().int(), photos: z.number().int(),plans: z.number().int().default(0),task_updates: z.number().int().default(0) }),
 });
 export type BackupManifest = z.infer<typeof manifestSchema>;
 export type PreparedBackup = { format: "zip" | "json"; data: AppData; photos: Map<string, Blob>; retainedPhotos?: Map<string, Blob>; manifest?: BackupManifest; warnings: string[]; missingImageIds: string[] };
@@ -26,7 +26,7 @@ function parseJson(text: string, name: string): unknown {
 }
 
 export function backupCounts(data: AppData) {
-  return { weights: data.weights.length, meals: data.meals.length, exercises: data.exercises.length, checkins: data.checkins.length, summaries: data.summaries.length, photos: data.meals.reduce((count, meal) => count + meal.images.length, 0) };
+  return { weights: data.weights.length, meals: data.meals.length, exercises: data.exercises.length, checkins: data.checkins.length, summaries: data.summaries.length, photos: data.meals.reduce((count, meal) => count + meal.images.length, 0),plans: data.plans?.length || 0,task_updates: data.task_updates?.length || 0 };
 }
 
 export async function detectPhotoType(bytes: Uint8Array) {
@@ -38,6 +38,12 @@ export async function detectPhotoType(bytes: Uint8Array) {
 
 export async function exportZipBackup(data: AppData, readPhoto: PhotoReader, onProgress?: (done: number, total: number) => void, retained: RetainedPhoto[] = []): Promise<Blob> {
   const records = structuredClone(persistedData(appDataSchema.parse(data)));
+  // Canonical record order keeps repeated backup hashes stable after a merge restore.
+  for (const key of ["weights","meals","exercises","checkins","summaries","task_updates"] as const) {
+    records[key]?.sort((a,b) => a.record_date.localeCompare(b.record_date) || a.id.localeCompare(b.id));
+  }
+  records.plans?.sort((a,b) => a.week_start.localeCompare(b.week_start) || a.id.localeCompare(b.id));
+  for (const meal of records.meals) meal.images.sort((a,b) => a.id.localeCompare(b.id));
   const manifest: BackupManifest = { app: "gentle-fat-loss-coach", backup_version: 2, exported_at: new Date().toISOString(), files: [], images: [], retained_images: [], counts: backupCounts(records) };
   if (manifest.counts.photos + retained.length > 10000) throw new Error("照片总数超过此版本 10000 张的备份上限。");
   const files: Zippable = {};

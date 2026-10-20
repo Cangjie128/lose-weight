@@ -12,7 +12,7 @@ test("contains the expected app surfaces", async () => {
   ]);
 
   assert.match(page, /<FatLossApp \/>/);
-  assert.match(layout, /温和减脂记录与指导/);
+  assert.match(layout, /拾光计划/);
   assert.match(app, /AI分析/);
   assert.match(app, /7日移动平均/);
   assert.match(app, /本地演示模式/);

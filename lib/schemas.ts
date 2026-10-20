@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { AppData } from "./fat-loss";
+import { planningPreferencesSchema, taskUpdateSchema, weekPlanSchema } from "./plan-types.ts";
 
 export const mealAnalysisSchema = z.object({
   foods: z.array(z.string()).default([]),
@@ -94,6 +95,7 @@ export const appDataSchema = z.object({
     exercise_preferences: z.array(z.enum(["跑步", "游泳", "步行", "羽毛球", "力量训练", "其他"])).default(["步行", "力量训练"]),
     nutrition_targets: nutritionTargetsSchema.nullable().default(null),
     needs_professional_guidance: z.boolean().default(false),
+    planning: planningPreferencesSchema.default(() => planningPreferencesSchema.parse({})),
   }),
   challenge: recordSchema.extend({
     start_date: z.iso.date(),
@@ -121,6 +123,7 @@ export const appDataSchema = z.object({
     notes: z.string(),
     ai_analysis: mealAnalysisSchema.nullable(),
     nutrition: mealNutritionSchema.nullable().default(null),
+    plan_task_id: z.string().optional(),
     images: z.array(recordSchema.extend({
       meal_record_id: z.string().min(1),
       storage_path: z.string().min(1),
@@ -132,6 +135,7 @@ export const appDataSchema = z.object({
     })),
   })),
   exercises: z.array(recordSchema.extend({
+    plan_task_id: z.string().optional(),
     exercise_type: z.enum(["跑步", "游泳", "步行", "羽毛球", "力量训练", "其他"]),
     duration_min: z.number().nonnegative(),
     distance_km: z.number().nonnegative().nullable(),
@@ -160,6 +164,8 @@ export const appDataSchema = z.object({
     summary: dailySummarySchema,
     source_snapshot: z.unknown(),
   })),
+  plans: z.array(weekPlanSchema).default([]),
+  task_updates: z.array(taskUpdateSchema).default([]),
 });
 
 const backupSchema = z.object({
@@ -227,6 +233,8 @@ export function mergeBackupData(current: AppData, incoming: AppData): AppData {
     exercises: merge(current.exercises, incoming.exercises),
     checkins: merge(current.checkins, incoming.checkins, true),
     summaries: merge(current.summaries, incoming.summaries, true),
+    plans: [...new Map([...(current.plans || []),...(incoming.plans || [])].map((plan) => [plan.id,plan])).values()].sort((a,b) => a.week_start.localeCompare(b.week_start)),
+    task_updates: merge(current.task_updates || [],incoming.task_updates || []),
   };
 }
 

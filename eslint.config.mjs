@@ -10,6 +10,7 @@ const eslintConfig = defineConfig([
     // Default ignores of eslint-config-next:
     ".next/**",
     ".next-v2/**",
+    ".next-coach/**",
     "outputs/**",
     "work/**",
     "out/**",

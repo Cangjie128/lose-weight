@@ -1,4 +1,5 @@
 import type { DailySummary, MealAnalysis } from "./schemas";
+import type { PlanningPreferences, TaskUpdate, WeekPlan } from "./plan-types";
 import { addDays as shiftDays, differenceInCalendarDays, format, parseISO } from "date-fns";
 
 export type MealType = "breakfast" | "lunch" | "dinner" | "snack";
@@ -77,6 +78,7 @@ export type Profile = {
   exercise_preferences?: ExerciseType[];
   nutrition_targets?: NutritionTargets | null;
   needs_professional_guidance?: boolean;
+  planning?: PlanningPreferences;
   created_at?: string;
   updated_at?: string;
 };
@@ -148,12 +150,14 @@ export type MealRecord = {
   notes: string;
   ai_analysis: MealAnalysis | null;
   nutrition?: MealNutrition | null;
+  plan_task_id?: string;
   images: MealImage[];
   created_at?: string;
   updated_at?: string;
 };
 
 export type ExerciseRecord = {
+  plan_task_id?: string;
   id: string;
   user_id: string;
   record_date: string;
@@ -203,6 +207,8 @@ export type AppData = {
   exercises: ExerciseRecord[];
   checkins: DailyCheckin[];
   summaries: DailyAiSummaryRecord[];
+  plans?: WeekPlan[];
+  task_updates?: TaskUpdate[];
 };
 
 export function formatDate(date: Date) {

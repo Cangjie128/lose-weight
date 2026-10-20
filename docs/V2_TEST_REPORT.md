@@ -1,5 +1,7 @@
 # lose-weight V2 开发验收报告
 
+> 历史报告：以下描述早期 Supabase V2 验收。最新产品已转向每日行动教练，最终架构改为完全自托管，不使用 Supabase。当前交付、预览和限制请以 [行动教练验收报告](COACH_TEST_REPORT.md) 与 [自托管架构](SELF_HOSTED_ARCHITECTURE.md) 为准。
+
 日期：2026-10-20。基准：`94da17123ba5d7ac16f701fcddd871c7c650a5a9`。分支：`codex/lose-weight-v2`。
 
 结论：隔离本地开发版已通过构建、44 项自动化测试及桌面/手机浏览器验收。可以先试用手动记录、营养统计和完整 ZIP；不代表真实 Supabase、Google 或 DeepSeek 已完成联调。不合并 main，不部署生产。
