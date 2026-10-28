@@ -3,7 +3,7 @@ import test from "node:test";
 import { readFile } from "node:fs/promises";
 import { PGlite } from "@electric-sql/pglite";
 import { addDays,buildDefaultData } from "../lib/fat-loss.ts";
-import { generateWeekPlan,mondayOf,taskState,tasksForDate,effectiveTask,nextActionAdvice,weeklyReview } from "../lib/action-plan.ts";
+import { adjustPlanAfterActuals,generateWeekPlan,mondayOf,taskState,tasksForDate,effectiveTask,nextActionAdvice,weeklyReview } from "../lib/action-plan.ts";
 import { planningPreferencesSchema,taskUpdateSchema,weekPlanSchema } from "../lib/plan-types.ts";
 import { appDataSchema,createDataBackup,parseDataBackup,mergeBackupData } from "../lib/schemas.ts";
 import { exportZipBackup,inspectBackup } from "../lib/zip-backup.ts";
@@ -53,7 +53,7 @@ test("skip, reschedule, meal replacement and manual recovery persist without tou
   assert.equal(tasksForDate(data,task.date).some(item=>item.id===task.id),false);
   const moved=tasksForDate(data,addDays(task.date,1)).find(item=>item.id===task.id);
   assert.equal(moved.time,"09:15"); assert.equal(moved.amount,task.meals[1].portion); assert.equal(taskState(data,moved),"later"); assert.equal(data.meals.length,0);
-  const movement=data.plans[0].days[0].tasks.find(task=>task.kind==="exercise");
+  const movement=data.plans[0].days.filter(day=>day.date>=date).flatMap(day=>day.tasks).find(task=>task.kind==="exercise");
   data.task_updates.push(update(data,movement,{ recovery:true }));
   assert.equal(effectiveTask(data,movement).kind,"habit"); assert.equal(data.exercises.length,0);
 });
@@ -62,7 +62,7 @@ test("actual meals and training update tasks; fatigue adjusts only uncompleted e
   const data=fixture(); const meal=data.plans[0].days[0].tasks[0];
   data.meals=[{ id:"meal",record_date:meal.date,meal_type:meal.meal_type,plan_task_id:meal.id,food_name:"待识别餐食",images:[] }];
   assert.equal(taskState(data,meal),"pending"); data.meals[0].food_name="实际午餐"; assert.equal(taskState(data,meal),"completed");
-  const movement=data.plans[0].days[0].tasks.find(task=>task.kind==="exercise");
+  const movement=data.plans[0].days.filter(day=>day.date>=date).flatMap(day=>day.tasks).find(task=>task.kind==="exercise");
   data.checkins=[{ record_date:movement.date,fatigue_level:8,sleep_hours:5,body_feeling:"" }];
   assert.equal(effectiveTask(data,movement).kind,"habit");
   data.task_updates=[update(data,movement,{ status:"completed" })]; assert.equal(effectiveTask(data,movement).kind,"exercise");
@@ -73,6 +73,24 @@ test("actual intake produces concrete next-meal options, never punishment or ski
   const advice=nextActionAdvice(data,date); assert.match(advice.food,/g|ml/); assert.match(advice.reason,/不跳餐/); assert.match(advice.reason,/蛋白质/);
   data.task_updates=data.plans[0].days[1].tasks.filter(task=>task.kind==="meal").map(task=>update(data,task,{ amount:"自选正常餐，待确认份量" }));
   const custom=nextActionAdvice(data,date); assert.equal(custom.food,"自选正常餐，待确认份量"); assert.match(custom.reason,/不沿用原份量/);
+});
+
+test("weight, meals and recovery adjust only pending non-manual future tasks",()=>{
+  const data=fixture();
+  data.weights=Array.from({length:8},(_,index)=>({ id:`w${index}`,user_id:data.profile.user_id,record_date:addDays(date,index-7),weight_kg:56-index*0.1,note:"",high_salt:false,late_dinner:false,menstrual_period:false,bowel_movement:false,poor_sleep:false,hard_training_previous_day:false }));
+  data.checkins=[{ record_date:date,fatigue_level:8,sleep_hours:5,body_feeling:"疲劳" }];
+  const completed=data.plans[0].days[1].tasks[0]; const manual=data.plans[0].days[1].tasks[1];
+  data.task_updates=[update(data,completed,{ status:"completed" }),update(data,manual,{ status:"later",amount:"用户自己安排的正常餐" })];
+  const afterWeight=adjustPlanAfterActuals(data,date,"weight");
+  assert.equal(afterWeight.task_updates.find(item=>item.id===completed.id).status,"completed");
+  assert.equal(afterWeight.task_updates.find(item=>item.id===manual.id).amount,"用户自己安排的正常餐");
+  assert.ok(afterWeight.task_updates.some(item=>item.source==="system" && /7 日趋势|记录仍少/.test(item.note)));
+  const movement=data.plans[0].days.filter(day=>day.date>=date).flatMap(day=>day.tasks).find(task=>task.kind==="exercise");
+  const afterRecovery=adjustPlanAfterActuals(data,date,"recovery");
+  assert.equal(afterRecovery.task_updates.find(item=>item.id===movement.id)?.recovery,true);
+  const mealData=fixture(); mealData.meals=[{ record_date:date,meal_type:"breakfast",food_name:"粥",images:[],nutrition:{ calories_min:200,calories_max:250,protein_g:2,fat_g:1,carbohydrate_g:45 } }];
+  const afterMeal=adjustPlanAfterActuals(mealData,date,"meal");
+  assert.ok(afterMeal.task_updates.some(item=>item.source==="system" && /蛋白质/.test(item.note)));
 });
 
 test("weekly review simplifies the next week without reducing food or overwriting history",()=>{

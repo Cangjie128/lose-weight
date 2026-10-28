@@ -2,8 +2,21 @@ import { z } from "zod";
 import type { AppData } from "./fat-loss";
 import { planningPreferencesSchema, taskUpdateSchema, weekPlanSchema } from "./plan-types.ts";
 
+export const mealFoodItemSchema = z.object({
+  name: z.string().min(1).max(200),
+  portion_description: z.string().max(300),
+  estimated_portion_g: z.number().nonnegative().nullable(),
+  portion_status: z.enum(["estimated", "needs_confirmation"]),
+  calories_min: z.number().nonnegative().nullable(),
+  calories_max: z.number().nonnegative().nullable(),
+  protein_g: z.number().nonnegative().nullable(),
+  fat_g: z.number().nonnegative().nullable(),
+  carbohydrate_g: z.number().nonnegative().nullable(),
+});
+
 export const mealAnalysisSchema = z.object({
   foods: z.array(z.string()).default([]),
+  food_items: z.array(mealFoodItemSchema).default([]),
   estimated_calories_min: z.number().min(0).nullable(),
   estimated_calories_max: z.number().min(0).nullable(),
   estimated_portion_g: z.number().nonnegative().nullable().default(null),
@@ -34,6 +47,7 @@ export const dailySummarySchema = z.object({
 });
 
 export type MealAnalysis = z.infer<typeof mealAnalysisSchema>;
+export type MealFoodItem = z.infer<typeof mealFoodItemSchema>;
 export type DailySummary = z.infer<typeof dailySummarySchema>;
 
 export const nutritionTargetsSchema = z.object({
@@ -243,6 +257,7 @@ export const mealAnalysisJsonSchema = {
   additionalProperties: false,
   required: [
     "foods",
+    "food_items",
     "estimated_calories_min",
     "estimated_calories_max",
     "estimated_portion_g", "protein_g", "fat_g", "carbohydrate_g", "recognition_status",
@@ -257,6 +272,25 @@ export const mealAnalysisJsonSchema = {
   ],
   properties: {
     foods: { type: "array", items: { type: "string" } },
+    food_items: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["name", "portion_description", "estimated_portion_g", "portion_status", "calories_min", "calories_max", "protein_g", "fat_g", "carbohydrate_g"],
+        properties: {
+          name: { type: "string" },
+          portion_description: { type: "string" },
+          estimated_portion_g: { type: ["number", "null"], minimum: 0 },
+          portion_status: { type: "string", enum: ["estimated", "needs_confirmation"] },
+          calories_min: { type: ["number", "null"], minimum: 0 },
+          calories_max: { type: ["number", "null"], minimum: 0 },
+          protein_g: { type: ["number", "null"], minimum: 0 },
+          fat_g: { type: ["number", "null"], minimum: 0 },
+          carbohydrate_g: { type: ["number", "null"], minimum: 0 },
+        },
+      },
+    },
     estimated_calories_min: { type: ["number", "null"], minimum: 0 },
     estimated_calories_max: { type: ["number", "null"], minimum: 0 },
     estimated_portion_g: { type: ["number", "null"], minimum: 0 },

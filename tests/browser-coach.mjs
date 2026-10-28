@@ -31,11 +31,13 @@ async function layout(label) {
 }
 async function exportZip(filename) { const event=page.waitForEvent("download");await page.getByRole("button",{name:"导出完整 ZIP 备份",exact:true}).click();const file=await event;await file.saveAs(path.join(output,filename));return readFile(path.join(output,filename)); }
 try {
-  await page.goto(url); await page.getByRole("heading",{name:"今日减脂计划",exact:true}).waitFor();await until(async()=>Boolean((await saved()).plans?.length));
+  await page.goto(url); await page.getByRole("heading",{name:"今日减肥计划",exact:true}).waitFor();await until(async()=>Boolean((await saved()).plans?.length));
   const first=await saved();assert.equal(first.weights.length,0);assert.equal(first.plans[0].days.length,7);assert.equal(first.plans[0].days.flatMap(day=>day.tasks).length,49);
-  assert.equal(await page.getByLabel("体重 kg",{exact:true}).isVisible(),false);
+  assert.equal(await page.getByLabel("体重 kg",{exact:true}).isVisible(),true);assert.equal(await page.getByLabel("体重 kg",{exact:true}).inputValue(),"");
+  await page.getByLabel("体重 kg",{exact:true}).fill("55.8");await page.getByRole("button",{name:"保存体重",exact:true}).click();await until(async()=>((await saved()).weights.length===1 && (await saved()).weights[0].weight_kg===55.8));
+  await nav("趋势");await page.getByRole("button",{name:"记录体重",exact:true}).click();assert.equal(await page.getByLabel("体重 kg",{exact:true}).inputValue(),"55.8");await page.getByLabel("体重 kg",{exact:true}).fill("55.7");await page.getByRole("button",{name:"保存体重",exact:true}).click();await until(async()=>((await saved()).weights.length===1 && (await saved()).weights[0].weight_kg===55.7));await nav("今日");
   await layout("mobile first screen");await page.screenshot({path:path.join(output,"home-mobile.png")});
-  results.push("New user receives 49 concrete actions across Monday-Sunday without AI or fabricated weight history; forms are secondary.");
+  results.push("New user receives 49 concrete actions; prominent home and trend weight entry starts blank and same-day saves update instead of duplicating.");
   const breakfast=page.locator(`.plan-task[data-task-id="${todayString()}:breakfast"]`);
   await breakfast.locator(".task-guide summary").click();assert.ok(await breakfast.locator("ol li").count()>=3);assert.equal(await breakfast.getByRole("link").count()>0,true);
   await breakfast.getByRole("button",{name:"完成",exact:true}).click();await page.getByRole("dialog").waitFor();
@@ -50,7 +52,7 @@ try {
   assert.equal(await page.locator(`.plan-task[data-task-id="${todayString()}:sleep"]`).count(),0);
   const dinner=page.locator(`.plan-task[data-task-id="${todayString()}:dinner"]`);const amount=await dinner.locator(".task-amount").innerText();
   await dinner.getByRole("button",{name:/替换/}).click();await until(async()=>(await saved()).task_updates.some(item=>item.id.endsWith(":dinner") && item.meal_choice===1));assert.notEqual(await dinner.locator(".task-amount").innerText(),amount);
-  await page.reload();await page.getByRole("heading",{name:"今日减脂计划",exact:true}).waitFor();assert.equal((await saved()).meals.length,1);
+  await page.reload();await page.getByRole("heading",{name:"今日减肥计划",exact:true}).waitFor();assert.equal((await saved()).meals.length,1);
   results.push("Meal completion explicitly confirms approximate intake; skip, cross-day reschedule and replacement survive refresh.");
 
   const photo = await page.evaluate(() => {
@@ -62,10 +64,10 @@ try {
   const lunch=page.locator(`.plan-task[data-task-id="${todayString()}:lunch"]`);
   await lunch.locator('input[type="file"]').setInputFiles({name:"test-lunch.jpg",mimeType:"image/jpeg",buffer:Buffer.from(photo,"base64")});
   await until(async()=>(await saved()).meals.some(item=>item.plan_task_id===`${todayString()}:lunch` && item.images.length===1));
-  await nav("今日");await page.getByRole("heading",{name:"今日减脂计划",exact:true}).waitFor();
+  await nav("今日");await page.getByRole("heading",{name:"今日减肥计划",exact:true}).waitFor();
   const photographed=(await saved()).meals.find(item=>item.plan_task_id===`${todayString()}:lunch`);
   assert.equal(photographed.nutrition,null);assert.equal(photographed.ai_analysis,null);
-  await page.reload();await page.getByRole("heading",{name:"今日减脂计划",exact:true}).waitFor();
+  await page.reload();await page.getByRole("heading",{name:"今日减肥计划",exact:true}).waitFor();
   assert.equal((await saved()).meals.find(item=>item.id===photographed.id).images.length,1);
   results.push("Home camera stores a real JPEG linked to the plan; refresh preserves it without invented nutrition or automatic AI calls.");
 

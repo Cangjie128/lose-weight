@@ -1,6 +1,6 @@
-import { addDays,daysBetween,todayString,type AppData,type MealNutrition } from "./fat-loss.ts";
+import { addDays,daysBetween,movingAverage,todayString,type AppData,type MealNutrition } from "./fat-loss.ts";
 import { dailyNutrition,calculateNutritionTargets,exerciseSuggestion } from "./nutrition.ts";
-import { planningPreferencesSchema,type PlanMeal,type PlanTask,type TaskUpdate,type WeekPlan } from "./plan-types.ts";
+import { planningPreferencesSchema,taskUpdateSchema,type PlanMeal,type PlanTask,type TaskUpdate,type WeekPlan } from "./plan-types.ts";
 
 const resources = {
   food: { title: "WHO 多样化健康饮食",url: "https://www.who.int/news-room/fact-sheets/detail/healthy-diet" },
@@ -162,4 +162,49 @@ export function nextActionAdvice(data: AppData,date: string) {
   }
   const reasons = total.unknown ? `还有${total.unknown}餐营养不完整，先确认份量，不把空白当成没吃。` : targets && total.calories_max > targets.calories ? "今天的估算可能高于目标，下一餐仍正常吃，不跳餐、不额外加练。" : "按饥饿感正常吃，食物可替换，优先规律。";
   return { title: next ? `下一餐 · ${next.time}` : "今天的饮食安排已处理",food: customAmount || suggestion?.portion || "如果仍饿，可以安排正常加餐；无需为了完成度额外吃一餐。",reason: `${reasons}${customAmount ? "已按手动调整显示，请确认实际营养，不沿用原份量估计。" : adjustment}`,exercise: exerciseSuggestion(data,date) };
+}
+
+export function adjustPlanAfterActuals(data: AppData,date: string,cause: "weight"|"meal"|"recovery") {
+  const current = new Map((data.task_updates || []).map((update) => [update.id,update]));
+  const allTasks = (data.plans || []).flatMap((week) => week.days.flatMap((day) => day.tasks)).sort((a,b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time));
+  const now = date === todayString() ? new Date().toTimeString().slice(0,5) : "00:00";
+  const checkins = data.checkins.filter((item) => item.record_date >= addDays(date,-2) && item.record_date <= date);
+  const recentExercise = data.exercises.filter((item) => item.record_date >= addDays(date,-2) && item.record_date <= date);
+  const needsRecovery = checkins.some((item) => (item.fatigue_level || 0) >= 6 || item.sleep_hours !== null && item.sleep_hours < 6 || /疼|痛|头晕|胸闷|不适|疲劳/.test(item.body_feeling))
+    || recentExercise.some((item) => item.has_discomfort || item.intensity === "高" || /疼|痛|头晕|胸闷|过累/.test(`${item.feeling} ${item.discomfort_detail}`));
+  const trend = movingAverage(data.weights.filter((item) => item.record_date <= date),7);
+  const latest = trend.at(-1);
+  const earlier = trend.findLast((item) => item.record_date <= addDays(date,-7)) || trend[0];
+  const weeklyTrend = latest && earlier && latest.record_date !== earlier.record_date ? Number((latest.moving_average-earlier.moving_average).toFixed(1)) : null;
+  const intake = dailyNutrition(data.meals.filter((meal) => meal.record_date === date));
+  const targets = calculateNutritionTargets(data.profile).targets;
+  let adjusted = 0;
+  for (const task of allTasks) {
+    if (task.date < date || task.date === date && task.time < now) continue;
+    if (task.date > addDays(date,6)) break;
+    const existing = current.get(task.id);
+    if (existing && existing.source !== "system") continue;
+    if (["completed","skipped","later"].includes(taskState(data,task))) continue;
+    let patch: Partial<TaskUpdate> | null = null;
+    if (task.kind === "exercise" && needsRecovery && adjusted < 2) {
+      patch = { recovery: true,duration_min: Math.min(task.duration_min || 10,10),note: "已根据近期睡眠、疲劳、身体状态和训练记录改为恢复；不会补练。" };
+      adjusted += 1;
+    } else if (cause === "meal" && task.kind === "meal" && task.date === date) {
+      if (intake.unknown) patch = { note: `已有 ${intake.unknown} 餐营养待确认；先补充分量，下一餐保持正常主食、蛋白质和蔬菜。` };
+      else if (targets && intake.recorded > 0 && intake.protein_g < targets.protein_g*0.6) {
+        const ranked = task.meals.map((meal,index) => ({ index,protein: meal.protein_g })).sort((a,b) => b.protein-a.protein);
+        patch = { meal_choice: ranked[0]?.index || 0,note: "已根据实际饮食更新：下一餐优先合理蛋白质来源，同时保留正常主食和蔬菜。" };
+      } else patch = { note: "已根据实际饮食更新：维持正常份量，不跳餐，也不追加运动抵消。" };
+    } else if (cause === "weight" && task.date > date && adjusted < 3) {
+      const trendText = weeklyTrend === null ? "记录仍少，暂不依据单日波动改变强度" : `7 日趋势约 ${weeklyTrend > 0 ? "+" : ""}${weeklyTrend} kg`;
+      patch = { note: `已结合最新体重与${trendText}复核；保持温和安排，不因单日体重大幅削减热量或增加运动。` };
+      adjusted += 1;
+    }
+    if (!patch) continue;
+    current.set(task.id,taskUpdateSchema.parse({
+      status: "pending",meal_choice: 0,recovery: false,note:"",...existing,...patch,
+      id:task.id,user_id:data.profile.user_id,record_date:task.date,source:"system",updated_at:new Date().toISOString(),
+    }));
+  }
+  return { ...data,task_updates: [...current.values()].sort((a,b) => a.record_date.localeCompare(b.record_date) || a.id.localeCompare(b.id)) };
 }

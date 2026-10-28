@@ -1,4 +1,5 @@
-import type { AppData,MealImage } from "../lib/fat-loss";
+import type { AppData,MealImage,MealRecord } from "../lib/fat-loss";
+import type { MealAnalysis } from "../lib/schemas";
 
 // Contracts for the next server phase. No self-hosted adapter is claimed to be running yet.
 export type Principal = { id: string; sessionId: string };
@@ -23,3 +24,16 @@ export interface ModelBudget {
   reserve(owner: Principal,requestId: string): Promise<void>;
   finish(owner: Principal,requestId: string,usage: { input: number; output: number; success: boolean }): Promise<void>;
 }
+export interface MealAnalysisRepository {
+  readMeal(owner: Principal,mealId: string): Promise<MealRecord>;
+  saveAnalysis(owner: Principal,mealId: string,analysis: MealAnalysis,expectedUpdatedAt?: string): Promise<MealRecord>;
+}
+
+// The production AI route must compose these Oracle-backed ports. The loopback
+// test mode deliberately bypasses them and must never be exposed publicly.
+export type ProductionAiServices = {
+  accounts: AccountService;
+  meals: MealAnalysisRepository;
+  photos: PrivatePhotoStore;
+  budget: ModelBudget;
+};

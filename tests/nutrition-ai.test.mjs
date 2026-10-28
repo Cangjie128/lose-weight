@@ -3,8 +3,10 @@ import test from "node:test";
 import { AiError, authenticateAi, handleAiRequest } from "../lib/ai-service.ts";
 import { addDays, buildDefaultData, todayString } from "../lib/fat-loss.ts";
 import { calculateNutritionTargets, dailyNutrition, exerciseSuggestion } from "../lib/nutrition.ts";
+import { invalidateChangedAnalysis,nutritionFromAnalysis,recalculateMealAnalysis } from "../lib/meal-analysis.ts";
 
-const recognized = { foods: ["鸡蛋"], estimated_calories_min: 300, estimated_calories_max: 450, estimated_portion_g: 200, protein_g: 20, fat_g: 12, carbohydrate_g: 35, recognition_status: "recognized", protein_level: "基本够", carbohydrate_level: "适中", fat_level: "适中", vegetable_level: "不足", strengths: [], improvements: [], next_meal_suggestion: "配蔬菜和主食", uncertainty_note: "根据照片和描述估算，存在误差" };
+const recognized = { foods: ["鸡蛋"], food_items: [{ name:"鸡蛋",portion_description:"1个（约50g可食部分）",estimated_portion_g:50,portion_status:"estimated",calories_min:70,calories_max:80,protein_g:6.5,fat_g:5,carbohydrate_g:0.5 }], estimated_calories_min: 70, estimated_calories_max: 80, estimated_portion_g: 50, protein_g: 6.5, fat_g: 5, carbohydrate_g: 0.5, recognition_status: "recognized", protein_level: "基本够", carbohydrate_level: "适中", fat_level: "适中", vegetable_level: "不足", strengths: [], improvements: [], next_meal_suggestion: "配蔬菜和主食", uncertainty_note: "根据照片和描述估算，存在误差" };
+const mixedMeal = { ...recognized,foods:["鸡蛋","纯牛奶"],food_items:[recognized.food_items[0],{ name:"纯牛奶",portion_description:"250ml",estimated_portion_g:250,portion_status:"estimated",calories_min:145,calories_max:165,protein_g:7.5,fat_g:7.5,carbohydrate_g:12 }],estimated_calories_min:215,estimated_calories_max:245,estimated_portion_g:300,protein_g:14,fat_g:12.5,carbohydrate_g:12.5 };
 const png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j2WQAAAAASUVORK5CYII=";
 const request = (body = {}) => new Request("http://localhost/api/analyze-meal", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ food_name: "鸡蛋",portion: "一份",image_urls: [png],...body }) });
 function mocked(response) {
@@ -41,6 +43,14 @@ test("daily macros sum all meals and do not invent nutrition for unknown meals",
   assert.equal(result.protein_g, 40); assert.equal(result.unknown, 1);
 });
 
+test("multi-food items deterministically recalculate the whole meal and invalidate changed portions", () => {
+  const recalculated = recalculateMealAnalysis(mixedMeal);
+  assert.equal(recalculated.estimated_calories_min,215); assert.equal(recalculated.protein_g,14);
+  assert.equal(nutritionFromAnalysis(recalculated).calories_max,245);
+  const invalid = invalidateChangedAnalysis(recalculated);
+  assert.equal(invalid.recognition_status,"needs_info"); assert.equal(invalid.protein_g,null); assert.equal(nutritionFromAnalysis(invalid),null);
+});
+
 test("exercise recommendations respect recent pain, fatigue, recovery and preferences", () => {
   const data = buildDefaultData("local");
   data.profile.exercise_preferences = ["游泳"];
@@ -75,11 +85,45 @@ test("DeepSeek Flash receives JSON and vision content, returns nutrient grams an
   const mock = mocked(Response.json({ choices: [{ message: { content: JSON.stringify(recognized) } }], usage: { prompt_tokens: 321, completion_tokens: 123 } }));
   const png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j2WQAAAAASUVORK5CYII=";
   const response = await handleAiRequest(request({ food_name: "鸡蛋", image_urls: [png] }),"meal",mock.dependencies);
-  assert.equal(response.status,200); assert.equal((await response.json()).analysis.protein_g,20);
+  assert.equal(response.status,200); assert.equal((await response.json()).analysis.protein_g,6.5);
   assert.equal(mock.calls[0].body.model,"deepseek-flash");
   assert.equal(mock.calls[0].body.response_format.type,"json_object");
   assert.equal(mock.calls[0].body.messages[1].content[1].type,"image_url");
   assert.deepEqual(mock.finishes[0], ["test-reservation",true,321,123]);
+});
+
+test("explicit loopback AI mode accepts text-only multi-food analysis without Supabase", async () => {
+  process.env.LOCAL_AI_TEST_MODE="true"; process.env.NEXT_PUBLIC_DATA_BACKEND="local"; process.env.AI_PROVIDER="deepseek"; process.env.DEEPSEEK_API_KEY="test-only-not-real";
+  try {
+    const mock=mocked(Response.json({ choices:[{ message:{ content:JSON.stringify(mixedMeal) } }],usage:{ prompt_tokens:30,completion_tokens:40 } }));
+    const localRequest=new Request("http://127.0.0.1:3005/api/analyze-meal",{ method:"POST",headers:{ "Content-Type":"application/json",Host:"127.0.0.1:3005",Origin:"http://127.0.0.1:3005" },body:JSON.stringify({ food_name:"一个鸡蛋、250ml纯牛奶",portion:"鸡蛋1个；牛奶250ml",notes:"无糖纯牛奶",image_urls:[] }) });
+    const response=await handleAiRequest(localRequest,"meal",{ ...mock.dependencies,authenticate:async()=>{ throw Error("Supabase must not be used"); },localReserve:()=>"local:1",localFinish:()=>undefined });
+    const payload=await response.json(); assert.equal(response.status,200); assert.equal(payload.local_test_mode,true); assert.equal(payload.analysis.food_items.length,2);
+    assert.equal(mock.calls[0].body.messages[1].content.length,1); assert.match(mock.calls[0].body.messages[1].content[0].text,/250ml纯牛奶/);
+  } finally { delete process.env.LOCAL_AI_TEST_MODE; delete process.env.NEXT_PUBLIC_DATA_BACKEND; }
+});
+
+test("explicit local AI mode without a server key fails clearly and makes no provider call",async()=>{
+  const previousKey=process.env.DEEPSEEK_API_KEY;
+  process.env.LOCAL_AI_TEST_MODE="true"; process.env.NEXT_PUBLIC_DATA_BACKEND="local"; process.env.AI_PROVIDER="deepseek"; delete process.env.DEEPSEEK_API_KEY;
+  try {
+    const mock=mocked(new Response());
+    const localRequest=new Request("http://127.0.0.1:3007/api/analyze-meal",{ method:"POST",headers:{ "Content-Type":"application/json",Host:"127.0.0.1:3007",Origin:"http://127.0.0.1:3007" },body:JSON.stringify({ food_name:"一个鸡蛋、250ml纯牛奶",image_urls:[] }) });
+    const response=await handleAiRequest(localRequest,"meal",{ ...mock.dependencies,localReserve:()=>"local:1",localFinish:()=>undefined });
+    assert.equal(response.status,503); assert.match((await response.json()).error,/DEEPSEEK_API_KEY|尚未配置/); assert.equal(mock.calls.length,0);
+  } finally {
+    delete process.env.LOCAL_AI_TEST_MODE; delete process.env.NEXT_PUBLIC_DATA_BACKEND;
+    if (previousKey === undefined) delete process.env.DEEPSEEK_API_KEY; else process.env.DEEPSEEK_API_KEY=previousKey;
+  }
+});
+
+test("local AI mode rejects non-loopback origins before any paid request",async()=>{
+  process.env.LOCAL_AI_TEST_MODE="true"; process.env.NEXT_PUBLIC_DATA_BACKEND="local";
+  try {
+    const mock=mocked(new Response());
+    const remote=new Request("http://127.0.0.1:3005/api/analyze-meal",{ method:"POST",headers:{ "Content-Type":"application/json",Host:"127.0.0.1:3005",Origin:"https://example.com" },body:JSON.stringify({ food_name:"鸡蛋",image_urls:[] }) });
+    const response=await handleAiRequest(remote,"meal",mock.dependencies); assert.equal(response.status,403); assert.equal(mock.calls.length,0);
+  } finally { delete process.env.LOCAL_AI_TEST_MODE; delete process.env.NEXT_PUBLIC_DATA_BACKEND; }
 });
 
 test("uncertain recognition clears every numerical estimate instead of inventing precision", async () => {
@@ -139,10 +183,10 @@ test("input image count, text length and explicitly requested reanalysis are bou
   const mock = mocked(new Response());
   assert.equal((await handleAiRequest(request({ image_urls: Array(5).fill(png) }),"meal",mock.dependencies)).status,400);
   assert.equal((await handleAiRequest(request({ notes: "x".repeat(2001) }),"meal",mock.dependencies)).status,400);
-  assert.equal((await handleAiRequest(request({ image_urls: [] }),"meal",mock.dependencies)).status,400);
+  assert.equal((await handleAiRequest(request({ food_name:"",portion:"",notes:"",image_urls: [] }),"meal",mock.dependencies)).status,400);
   assert.equal(mock.calls.length,0);
-  const incomplete = mocked(Response.json({ choices: [{ message: { content: JSON.stringify({ ...recognized,estimated_portion_g: null }) } }] }));
-  assert.equal((await handleAiRequest(request(),"meal",incomplete.dependencies)).status,422);
+  const incomplete = mocked(Response.json({ choices: [{ message: { content: JSON.stringify({ ...recognized,food_items:[{ ...recognized.food_items[0],portion_status:"needs_confirmation",protein_g:null }] }) } }] }));
+  const incompleteResponse=await handleAiRequest(request(),"meal",incomplete.dependencies); assert.equal(incompleteResponse.status,200); assert.equal((await incompleteResponse.json()).analysis.recognition_status,"needs_info");
   const redo = mocked(Response.json({ choices: [{ message: { content: JSON.stringify(recognized) } }] }));
   assert.equal((await handleAiRequest(request({ reanalyze_confirmed: true }),"meal",{ ...redo.dependencies,loadSaved: async () => ({ ai_analysis: recognized }) })).status,200);
   assert.equal(redo.calls.length,1);

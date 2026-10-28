@@ -22,10 +22,12 @@ export function calculateNutritionTargets(profile: Profile): { targets: Nutritio
 }
 
 export function dailyNutrition(meals: MealRecord[]) {
-  const known = meals.map((meal) => meal.nutrition || (meal.ai_analysis?.estimated_calories_min !== null && meal.ai_analysis?.estimated_calories_min !== undefined && meal.ai_analysis.estimated_calories_max !== null ? {
+  const resolved = meals.map((meal) => meal.nutrition || (meal.ai_analysis?.estimated_calories_min !== null && meal.ai_analysis?.estimated_calories_min !== undefined && meal.ai_analysis.estimated_calories_max !== null
+    && meal.ai_analysis.protein_g !== null && meal.ai_analysis.fat_g !== null && meal.ai_analysis.carbohydrate_g !== null ? {
     calories_min: meal.ai_analysis.estimated_calories_min, calories_max: meal.ai_analysis.estimated_calories_max,
-    protein_g: meal.ai_analysis.protein_g || 0, fat_g: meal.ai_analysis.fat_g || 0, carbohydrate_g: meal.ai_analysis.carbohydrate_g || 0,
-  } : null)).filter((nutrition) => nutrition !== null);
+    protein_g: meal.ai_analysis.protein_g, fat_g: meal.ai_analysis.fat_g, carbohydrate_g: meal.ai_analysis.carbohydrate_g,
+  } : null));
+  const known = resolved.filter((nutrition) => nutrition !== null);
   const total = known.reduce((sum, nutrition) => ({
     calories_min: sum.calories_min + nutrition.calories_min,
     calories_max: sum.calories_max + nutrition.calories_max,
@@ -33,7 +35,7 @@ export function dailyNutrition(meals: MealRecord[]) {
     fat_g: sum.fat_g + nutrition.fat_g,
     carbohydrate_g: sum.carbohydrate_g + nutrition.carbohydrate_g,
   }), { calories_min: 0, calories_max: 0, protein_g: 0, fat_g: 0, carbohydrate_g: 0 });
-  return { ...total, recorded: known.length, unknown: meals.filter((meal) => !meal.nutrition).length };
+  return { ...total, recorded: known.length, unknown: resolved.filter((nutrition) => nutrition === null).length };
 }
 
 export function nextMealSuggestion(meals: MealRecord[], targets: NutritionTargets | null) {

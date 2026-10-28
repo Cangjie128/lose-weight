@@ -6,11 +6,13 @@ import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("../",import.meta.url));
 const coach = process.argv.includes("--coach");
+const aiTest = process.argv.includes("--ai-test");
+if (aiTest && !coach) throw new Error("Local AI testing is only available with --coach.");
 const directory = coach ? ".next-coach" : ".next-v2";
 const dist = resolve(root,directory);
 const marker = resolve(dist,"isolated-preview.json");
 const env = { ...process.env,LOCAL_PREVIEW_DIR: directory,NODE_ENV: "production",NEXT_PUBLIC_DATA_BACKEND: "local",NEXT_PUBLIC_SUPABASE_URL: "",NEXT_PUBLIC_SUPABASE_ANON_KEY: "",
-  SUPABASE_SERVICE_ROLE_KEY: "",DEEPSEEK_API_KEY: "",OPENAI_API_KEY: "",GOOGLE_CLIENT_ID: "",GOOGLE_CLIENT_SECRET: "",INTEGRATION_ENCRYPTION_KEY: "",AI_ALLOW_OPENAI_FALLBACK: "false" };
+  LOCAL_AI_TEST_MODE: aiTest ? "true" : "false",SUPABASE_SERVICE_ROLE_KEY: "",DEEPSEEK_API_KEY: aiTest ? process.env.DEEPSEEK_API_KEY || "" : "",OPENAI_API_KEY: "",GOOGLE_CLIENT_ID: "",GOOGLE_CLIENT_SECRET: "",INTEGRATION_ENCRYPTION_KEY: "",AI_ALLOW_OPENAI_FALLBACK: "false" };
 function run(file,args,options = {}) {
   return new Promise((resolve,reject) => {
     const child = spawn(process.execPath,[file,...args],{ cwd: root,env,stdio: "inherit",...options });
@@ -38,6 +40,6 @@ if (!process.argv.includes("--build-only")) {
   await mkdir(resolve(dist,`standalone/${directory}/static`),{ recursive: true });
   await cp(resolve(dist,"static"),resolve(dist,`standalone/${directory}/static`),{ recursive: true,force: true });
   await cp(resolve(root,"public"),resolve(dist,"standalone/public"),{ recursive: true,force: true });
-  console.log(`Isolated V2 preview: http://127.0.0.1:${port}/`);
+  console.log(`${aiTest ? "Local DeepSeek test" : "Isolated V2 preview"}: http://127.0.0.1:${port}/`);
   await run(resolve(dist,"standalone/server.js"),[]);
 }

@@ -123,9 +123,9 @@ try {
   await until(async () => (await page.locator('img[alt="餐食照片"]').evaluateAll((images) => images.every((image) => image.complete && image.naturalWidth > 0))));
   results.push("ZIP preview is read-only; restore creates a prior ZIP; 100 photo hashes and records match re-export after reload.");
   const aiResponse = page.waitForResponse((response) => response.url().endsWith("/api/analyze-meal"));
-  await page.getByRole("button",{ name: "AI分析",exact: true }).first().click(); assert.equal((await aiResponse).status(),401);
-  await page.getByText("请先登录账号，再使用 AI 分析。手动记录不受影响。",{ exact: true }).waitFor();
-  results.push("No provider keys: manual nutrition works; paid AI requires login; no paid fallback or summary calls.");
+  await page.getByRole("button",{ name: "AI分析",exact: true }).first().click(); assert.equal((await aiResponse).status(),503);
+  await page.getByText(/当前是零外部请求的安全预览，尚未连接真实 AI/).waitFor();
+  results.push("No provider keys: the safe preview clearly reports that real AI is disconnected; manual nutrition still works and no fallback is called.");
 
   await page.setViewportSize({ width: 390,height: 844 });
   for (const name of ["今日","饮食","运动","趋势","AI教练","设置"]) { await nav(name); await page.waitForTimeout(name === "趋势" ? 1800 : 100); await layout(`mobile ${name}`); await page.screenshot({ path: path.join(output,`mobile-${name}.png`) }); }

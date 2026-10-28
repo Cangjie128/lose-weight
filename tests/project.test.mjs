@@ -12,10 +12,12 @@ test("contains the expected app surfaces", async () => {
   ]);
 
   assert.match(page, /<FatLossApp \/>/);
-  assert.match(layout, /拾光计划/);
+  assert.match(layout, /我的减肥计划/);
   assert.match(app, /AI分析/);
   assert.match(app, /7日移动平均/);
   assert.match(app, /本地演示模式/);
+  assert.match(app, /记录今日体重/);
+  assert.doesNotMatch(layout + app,/拾光计划|SHIGUANG/);
   assert.match(mealApi, /handleAiRequest\(request, "meal"\)/);
   assert.match(summaryApi, /handleAiRequest\(request, "summary"\)/);
 });
@@ -47,6 +49,8 @@ test("includes Supabase schema and deployment documentation", async () => {
   assert.match(envExample, /NEXT_PUBLIC_SUPABASE_URL/);
   assert.match(readme, /Vercel|部署/);
   assert.match(packageJson, /"build": "next build"/);
+  assert.match(packageJson,/preview:coach:ai/);
+  assert.match(envExample,/LOCAL_AI_TEST_MODE=false/);
 });
 
 test("does not keep starter preview artifacts wired into the app", async () => {

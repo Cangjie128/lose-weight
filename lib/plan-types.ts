@@ -33,6 +33,7 @@ export const weekPlanSchema = z.object({
 }).refine((week) => new Date(`${week.week_start}T12:00:00`).getDay()===1 && week.days.every((day,index) => day.date===addDays(week.week_start,index) && day.tasks.every((task) => task.date===day.date)) && new Set(week.days.flatMap((day) => day.tasks.map((task) => task.id))).size===week.days.reduce((sum,day) => sum+day.tasks.length,0),"周计划日期或任务 ID 无效。");
 export const taskUpdateSchema = z.object({
   id: z.string(),user_id: z.string(),record_date: z.iso.date(),
+  source: z.enum(["user","system"]).default("user"),
   status: z.enum(["pending","completed","skipped","later"]).default("pending"),
   scheduled_date: z.iso.date().optional(),scheduled_time: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/).optional(),
   title: z.string().min(1).max(200).optional(),amount: z.string().min(1).max(1000).optional(),

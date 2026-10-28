@@ -2,7 +2,7 @@
 import { useEffect, useState } from "react";
 import { RefreshCw, Sparkles } from "lucide-react";
 
-type AiStatus = { provider: string; model: string; configured: boolean; fallback_available: boolean; calls: number | null; input_tokens: number | null; output_tokens: number | null; user_daily_limit: number };
+type AiStatus = { provider: string; model: string; configured: boolean; local_test_mode: boolean; fallback_available: boolean; calls: number | null; input_tokens: number | null; output_tokens: number | null; user_daily_limit: number };
 export default function AiStatusPanel({ getHeaders }: { getHeaders: () => Promise<Record<string,string>> }) {
   const [status, setStatus] = useState<AiStatus | null>(null);
   async function refresh() {
@@ -19,6 +19,7 @@ export default function AiStatusPanel({ getHeaders }: { getHeaders: () => Promis
   return <section className="mt-5 border-t border-[#eadfcf] pt-4">
     <div className="flex items-center justify-between gap-3"><h4 className="text-sm font-bold">AI 服务与调用预算</h4><button onClick={() => void refresh()} title="刷新使用量" aria-label="刷新 AI 使用量" className="grid h-9 w-9 place-items-center rounded border border-[#d9ccb8]"><RefreshCw className="h-4 w-4" /></button></div>
     <p className="mt-2 text-sm">{status ? `${status.provider === "deepseek" ? "DeepSeek" : "OpenAI"} · ${status.model} · ${status.configured ? "已配置" : "未配置"}` : "正在读取服务状态"}</p>
+    {status && <p className="mt-2 text-xs text-[#667165]">{status.local_test_mode ? "本机回环 AI 测试模式已启用；结果保存到本地记录。" : "当前为安全预览，真实 AI 调用保持关闭。"}{!status.configured ? " 服务端尚未连接真实 AI，手动记录和营养计算仍可使用。" : ""}</p>}
     <p className="mt-2 text-sm text-[#667165]">今日调用：{status?.calls ?? "登录后可查看"}{status?.calls !== null && status?.calls !== undefined ? ` / ${status.user_daily_limit} 次` : ""}。预算按 UTC 每日重置。</p>
     {status?.input_tokens !== null && status?.input_tokens !== undefined && <p className="mt-1 text-xs text-[#667165]">已统计输入 {status.input_tokens} / 输出 {status.output_tokens || 0} tokens；实际账单以服务商为准。</p>}
     <p className="mt-2 text-xs text-[#667165]">{status?.fallback_available ? "OpenAI 备用已启用，每次使用前仍需明确确认。" : "备用付费模型未启用。"} 分析失败不会自动重试或切换付费服务。</p>
