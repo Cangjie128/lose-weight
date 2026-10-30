@@ -19,7 +19,7 @@ await context.route("**/*",async route=>{
   return route.continue();
 });
 const page=await context.newPage(); page.setDefaultTimeout(20000); page.on("pageerror",error=>errors.push(error.message));page.on("dialog",dialog=>dialog.accept());
-const nav=async name=>{await page.getByRole("button",{name,exact:true}).filter({visible:true}).first().click();await page.evaluate(()=>scrollTo(0,0));};
+const nav=async name=>{await page.getByRole("button",{name:name==="设置" ? "我的" : name,exact:true}).filter({visible:true}).first().click();await page.evaluate(()=>scrollTo(0,0));};
 const saved=()=>page.evaluate(async()=>{
   const db=await new Promise((resolve,reject)=>{const r=indexedDB.open("gentle-fat-loss-coach-v2",1);r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(r.error);});
   const data=await new Promise((resolve,reject)=>{const r=db.transaction("records").objectStore("records").get("current");r.onsuccess=()=>resolve(r.result.data);r.onerror=()=>reject(r.error);});db.close();return data;
@@ -31,13 +31,18 @@ async function layout(label) {
 }
 async function exportZip(filename) { const event=page.waitForEvent("download");await page.getByRole("button",{name:"导出完整 ZIP 备份",exact:true}).click();const file=await event;await file.saveAs(path.join(output,filename));return readFile(path.join(output,filename)); }
 try {
-  await page.goto(url); await page.getByRole("heading",{name:"今日减肥计划",exact:true}).waitFor();await until(async()=>Boolean((await saved()).plans?.length));
-  const first=await saved();assert.equal(first.weights.length,0);assert.equal(first.plans[0].days.length,7);assert.equal(first.plans[0].days.flatMap(day=>day.tasks).length,49);
-  assert.equal(await page.getByLabel("体重 kg",{exact:true}).isVisible(),true);assert.equal(await page.getByLabel("体重 kg",{exact:true}).inputValue(),"");
-  await page.getByLabel("体重 kg",{exact:true}).fill("55.8");await page.getByRole("button",{name:"保存体重",exact:true}).click();await until(async()=>((await saved()).weights.length===1 && (await saved()).weights[0].weight_kg===55.8));
-  await nav("趋势");await page.getByRole("button",{name:"记录体重",exact:true}).click();assert.equal(await page.getByLabel("体重 kg",{exact:true}).inputValue(),"55.8");await page.getByLabel("体重 kg",{exact:true}).fill("55.7");await page.getByRole("button",{name:"保存体重",exact:true}).click();await until(async()=>((await saved()).weights.length===1 && (await saved()).weights[0].weight_kg===55.7));await nav("今日");
+  await page.goto(url);await page.getByRole("button",{name:"完善个人资料",exact:true}).waitFor();assert.equal((await saved()).weights.length,0);assert.equal((await saved()).plans?.length || 0,0);
+  await page.getByRole("button",{name:"完善个人资料",exact:true}).click();const setup=page.getByRole("dialog",{name:"确认个人资料"});
+  for(const [label,value] of [["年龄（岁）","30"],["身高 cm","156"],["实际体重 kg","56"],["目标体重 kg","51"],["目标日期",addDays(todayString(),120)]]) await setup.getByLabel(label,{exact:true}).fill(value);
+  await setup.getByLabel("能量公式参考",{exact:true}).selectOption("女性");await setup.getByLabel("活动水平",{exact:true}).selectOption("light");await setup.getByRole("button",{name:"确认资料并生成首周计划"}).click();await setup.waitFor({state:"hidden"});
+  await page.getByRole("heading",{name:"今日减肥计划",exact:true}).waitFor();await until(async()=>Boolean((await saved()).plans?.length));
+  const first=await saved();assert.equal(first.plans[0].days.length,7);assert.equal(first.plans[0].days.flatMap(day=>day.tasks).length,49);
+  await page.getByRole("button",{name:"记录体重",exact:true}).click();const weightDialog=page.getByRole("dialog",{name:"记录体重",exact:true});assert.equal(await weightDialog.getByLabel("体重 kg",{exact:true}).inputValue(),"");
+  await weightDialog.getByLabel("体重 kg",{exact:true}).fill("55.8");await weightDialog.getByLabel("称重时段").selectOption("morning_fasting");await weightDialog.getByRole("button",{name:"保存体重",exact:true}).click();await weightDialog.waitFor({state:"hidden"});
+  await until(async()=>(await saved()).weights.length===2);
+  await nav("趋势");await page.getByRole("button",{name:"记录体重",exact:true}).click();assert.equal(await page.getByLabel("体重 kg",{exact:true}).inputValue(),"");await page.getByLabel("体重 kg",{exact:true}).fill("56.7");await page.getByLabel("称重时段").selectOption("evening_after_meal");await page.getByRole("button",{name:"保存体重",exact:true}).click();await until(async()=>(await saved()).weights.length===3);await nav("今日");
   await layout("mobile first screen");await page.screenshot({path:path.join(output,"home-mobile.png")});
-  results.push("New user receives 49 concrete actions; prominent home and trend weight entry starts blank and same-day saves update instead of duplicating.");
+  results.push("New user explicitly confirms blank profile fields before receiving 49 concrete actions; home/trend new weight fields start blank and same-day records remain separate.");
   const breakfast=page.locator(`.plan-task[data-task-id="${todayString()}:breakfast"]`);
   await breakfast.locator(".task-guide summary").click();assert.ok(await breakfast.locator("ol li").count()>=3);assert.equal(await breakfast.getByRole("link").count()>0,true);
   await breakfast.getByRole("button",{name:"完成",exact:true}).click();await page.getByRole("dialog").waitFor();

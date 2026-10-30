@@ -110,6 +110,7 @@ export const appDataSchema = z.object({
     nutrition_targets: nutritionTargetsSchema.nullable().default(null),
     needs_professional_guidance: z.boolean().default(false),
     planning: planningPreferencesSchema.default(() => planningPreferencesSchema.parse({})),
+    profile_confirmed_at: z.iso.datetime().optional(),
   }),
   challenge: recordSchema.extend({
     start_date: z.iso.date(),
@@ -129,6 +130,10 @@ export const appDataSchema = z.object({
     bowel_movement: z.boolean(),
     poor_sleep: z.boolean(),
     hard_training_previous_day: z.boolean(),
+    weighing_period: z.enum(["morning_fasting", "daytime", "evening_after_meal", "other"]).optional(),
+    weighed_at: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/).optional(),
+    food_state: z.enum(["fasting", "before_meal", "after_meal", "unspecified"]).optional(),
+    bowel_state: z.enum(["before", "after", "unspecified"]).optional(),
   })),
   meals: z.array(recordSchema.extend({
     meal_type: z.enum(["breakfast", "lunch", "dinner", "snack"]),
@@ -180,6 +185,7 @@ export const appDataSchema = z.object({
   })),
   plans: z.array(weekPlanSchema).default([]),
   task_updates: z.array(taskUpdateSchema).default([]),
+  coach_events: z.array(z.object({ id:z.string(),record_date:z.iso.date(),created_at:z.iso.datetime(),cause:z.enum(["weight","meal","recovery","profile"]),message:z.string(),targets:nutritionTargetsSchema.nullable() })).default([]),
 });
 
 const backupSchema = z.object({
@@ -242,13 +248,14 @@ export function mergeBackupData(current: AppData, incoming: AppData): AppData {
   return {
     profile: { ...incoming.profile, id: current.profile.id, user_id: userId },
     challenge: { ...incoming.challenge, id: current.challenge.id, user_id: userId },
-    weights: merge(current.weights, incoming.weights, true),
+    weights: merge(current.weights, incoming.weights),
     meals,
     exercises: merge(current.exercises, incoming.exercises),
     checkins: merge(current.checkins, incoming.checkins, true),
     summaries: merge(current.summaries, incoming.summaries, true),
     plans: [...new Map([...(current.plans || []),...(incoming.plans || [])].map((plan) => [plan.id,plan])).values()].sort((a,b) => a.week_start.localeCompare(b.week_start)),
     task_updates: merge(current.task_updates || [],incoming.task_updates || []),
+    coach_events: [...new Map([...(current.coach_events || []),...(incoming.coach_events || [])].map((event) => [event.id,event])).values()].sort((a,b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id)),
   };
 }
 

@@ -1,0 +1,18 @@
+{
+  "results": [
+    "30 calendar days load; weight save and refresh persistence pass.",
+    "100 actual JPEG uploads, <=1200px compression, IndexedDB storage and deterministic macro progress pass.",
+    "Exercise recording and rendered nonblank trend curves pass.",
+    "ZIP preview is read-only; restore creates a prior ZIP; 100 photo hashes and records match re-export after reload.",
+    "No provider keys: the safe preview clearly reports that real AI is disconnected; manual nutrition still works and no fallback is called.",
+    "390px and 320px mobile layouts: no page overflow or clipped button labels.",
+    "Damaged ZIP preserves existing records; legacy JSON preview and cancel pass."
+  ],
+  "metrics": {
+    "initial_load_ms": 236,
+    "upload_100_ms": 3450,
+    "zip_bytes": 590339
+  },
+  "page_errors": [],
+  "external_requests": []
+}

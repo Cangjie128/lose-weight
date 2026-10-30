@@ -1,6 +1,14 @@
 import { addDays, type AppData, type MealRecord, type NutritionTargets, type Profile } from "./fat-loss.ts";
+import { primaryWeightTrend } from "./weight-trend.ts";
 
 export const activityLabels = { sedentary: "久坐，日常活动较少", light: "轻度活动，每周运动 1–3 次", moderate: "中度活动，每周运动 3–5 次", active: "较多活动或体力工作" };
+
+export function dailyNutritionTargets(data:AppData,date:string) {
+  const selected=primaryWeightTrend(data.weights.filter((item) => item.record_date<=date));
+  const average=selected.trend.at(-1)?.moving_average;
+  const result=calculateNutritionTargets({ ...data.profile,current_weight_kg:average ?? data.profile.current_weight_kg });
+  return { ...result,explanation:`${result.explanation}${average ? ` 计算体重采用${selected.condition}的 7 日移动平均 ${average.toFixed(1)} kg。` : " 暂以用户明确确认的资料体重计算。"}` };
+}
 
 export function calculateNutritionTargets(profile: Profile): { targets: NutritionTargets | null; explanation: string } {
   if (profile.nutrition_targets) return { targets: profile.nutrition_targets, explanation: "使用你保存的手动目标" };
@@ -18,7 +26,8 @@ export function calculateNutritionTargets(profile: Profile): { targets: Nutritio
   const protein_g = Math.round(weight * 1.3);
   const fat_g = Math.round(calories * 0.3 / 9);
   const carbohydrate_g = Math.round((calories - protein_g * 4 - fat_g * 9) / 4);
-  return { targets: { calories, protein_g, fat_g, carbohydrate_g }, explanation: deficit ? "估算目标采用温和调整，随状态和趋势校正。" : "目前优先维持能量和规律进食，不自动设置热量缺口。" };
+  if (calories>5000 || protein_g>250 || carbohydrate_g<100 || carbohydrate_g>700 || fat_g>200) return { targets:null,explanation:"体型或活动量超出当前通用目标计算范围，请由专业人员确认，不自动设置减脂热量。" };
+  return { targets: { calories, protein_g, fat_g, carbohydrate_g }, explanation: `按 Mifflin–St Jeor 公式估算静息能量 ${Math.round(resting)} kcal × 活动系数 ${factors[profile.activity_level || "light"]}，维持量约 ${Math.round(maintenance)} kcal；${deficit ? `温和缺口约 ${Math.round(deficit)} kcal（不超过维持量的 10% 或 250 kcal），目标取整为 ${calories} kcal。` : "当前优先维持和规律进食，不自动设置热量缺口。"} 目标日期不用于扩大缺口。` };
 }
 
 export function dailyNutrition(meals: MealRecord[]) {

@@ -14,6 +14,7 @@
     "preview:coach": "node scripts/preview-v2.mjs --coach",
     "preview:coach:ai": "node scripts/preview-v2.mjs --coach --ai-test",
     "test:coach": "node --experimental-strip-types tests/browser-coach.mjs",
+    "test:daily-coach": "node --experimental-strip-types tests/browser-daily-coach.mjs",
     "test:unit": "node --experimental-strip-types --test tests/*.test.mjs",
     "test:browser": "node --experimental-strip-types tests/browser-v2.mjs",
     "start": "next start",

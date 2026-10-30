@@ -1,5 +1,6 @@
-import { addDays,daysBetween,movingAverage,todayString,type AppData,type MealNutrition } from "./fat-loss.ts";
-import { dailyNutrition,calculateNutritionTargets,exerciseSuggestion } from "./nutrition.ts";
+import { addDays,daysBetween,todayString,uid,type AppData,type MealNutrition } from "./fat-loss.ts";
+import { primaryWeightTrend } from "./weight-trend.ts";
+import { dailyNutrition,dailyNutritionTargets,exerciseSuggestion } from "./nutrition.ts";
 import { planningPreferencesSchema,taskUpdateSchema,type PlanMeal,type PlanTask,type TaskUpdate,type WeekPlan } from "./plan-types.ts";
 
 const resources = {
@@ -38,7 +39,7 @@ function eligible(data: AppData,key: string) {
   return !excluded.some((word) => food.tags.some((tag) => tag !== "animal" && tag !== "meat" && (tag.includes(word) || word.includes(tag))) || food.name.includes(word));
 }
 function mealOption(data: AppData,day: number,slot: number,variant: number): PlanMeal {
-  const targets = calculateNutritionTargets(data.profile).targets;
+  const targets = dailyNutritionTargets(data,todayString()).targets;
   const pick = (keys: string[]) => { const allowed = keys.filter((key) => eligible(data,key)); return allowed[(day+variant)%Math.max(1,allowed.length)]; };
   const grain = pick(slot === 0 ? ["oats","bread","potato","rice"] : ["rice","potato","bread","oats"]);
   const protein = pick(["chicken","tofu","fish","egg","lentil"]);
@@ -148,7 +149,7 @@ export function taskState(data: AppData,task: PlanTask): TaskUpdate["status"] {
 export function taskMealNutrition(meal: PlanMeal): MealNutrition { return { calories_min: meal.calories_min,calories_max: meal.calories_max,protein_g: meal.protein_g,fat_g: meal.fat_g,carbohydrate_g: meal.carbohydrate_g,portion_g: null,source: "manual" }; }
 export function nextActionAdvice(data: AppData,date: string) {
   const meals = data.meals.filter((record) => record.record_date === date);
-  const total = dailyNutrition(meals); const targets = calculateNutritionTargets(data.profile).targets;
+  const total = dailyNutrition(meals); const targets = dailyNutritionTargets(data,date).targets;
   const candidates = tasksForDate(data,date).filter((task) => task.kind === "meal" && taskState(data,task)!=="completed" && taskState(data,task)!=="skipped");
   const now = new Date(); const time = date===todayString() ? `${String(now.getHours()).padStart(2,"0")}:${String(now.getMinutes()).padStart(2,"0")}` : "00:00";
   const next = candidates.find((task) => task.time>=time) || candidates.at(-1);
@@ -164,7 +165,25 @@ export function nextActionAdvice(data: AppData,date: string) {
   return { title: next ? `下一餐 · ${next.time}` : "今天的饮食安排已处理",food: customAmount || suggestion?.portion || "如果仍饿，可以安排正常加餐；无需为了完成度额外吃一餐。",reason: `${reasons}${customAmount ? "已按手动调整显示，请确认实际营养，不沿用原份量估计。" : adjustment}`,exercise: exerciseSuggestion(data,date) };
 }
 
-export function adjustPlanAfterActuals(data: AppData,date: string,cause: "weight"|"meal"|"recovery") {
+export function adjustPlanAfterActuals(data: AppData,date: string,cause: "weight"|"meal"|"recovery",asOf=todayString()) {
+  const targets=dailyNutritionTargets(data,date).targets;
+  const previousEvents=data.coach_events || [];
+  const historical=date<asOf;
+  const message=historical ? "历史记录已修改；已完成计划保持不变，未重写历史目标。" : cause==="meal" ? "已根据实际饮食重算营养累计与下一餐，保留正常三餐，不追加运动。" : cause==="weight" ? "已按同条件体重趋势复核目标与未来任务，不按单日波动极端调整。" : "已根据实际运动、睡眠和身体状态复核恢复安排。";
+  const priorTargets=previousEvents.filter((event) => event.record_date===date).at(-1)?.targets;
+  const coach_events=[...previousEvents,{ id:uid("coach-event"),record_date:date,created_at:new Date().toISOString(),cause,message,targets:historical ? priorTargets ?? null : data.profile.profile_confirmed_at ? targets : null }];
+  if (historical) return { ...data,coach_events };
+  if(cause==="weight") {
+    const rebuilt=(data.plans || []).map((week) => {
+      const candidate=generateWeekPlan(data,week.week_start);
+      return { ...week,days:week.days.map((day) => ({ ...day,tasks:day.tasks.map((task) => {
+        const changed=data.task_updates?.find((update) => update.id===task.id);
+        if(task.date<asOf || task.date===todayString() && task.time<new Date().toTimeString().slice(0,5) || taskState(data,task)!=="pending" || changed && changed.source!=="system") return task;
+        return candidate.days.flatMap((item) => item.tasks).find((item) => item.id===task.id) || task;
+      }) })) };
+    });
+    data={ ...data,plans:rebuilt };
+  }
   const current = new Map((data.task_updates || []).map((update) => [update.id,update]));
   const allTasks = (data.plans || []).flatMap((week) => week.days.flatMap((day) => day.tasks)).sort((a,b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time));
   const now = date === todayString() ? new Date().toTimeString().slice(0,5) : "00:00";
@@ -172,12 +191,11 @@ export function adjustPlanAfterActuals(data: AppData,date: string,cause: "weight
   const recentExercise = data.exercises.filter((item) => item.record_date >= addDays(date,-2) && item.record_date <= date);
   const needsRecovery = checkins.some((item) => (item.fatigue_level || 0) >= 6 || item.sleep_hours !== null && item.sleep_hours < 6 || /疼|痛|头晕|胸闷|不适|疲劳/.test(item.body_feeling))
     || recentExercise.some((item) => item.has_discomfort || item.intensity === "高" || /疼|痛|头晕|胸闷|过累/.test(`${item.feeling} ${item.discomfort_detail}`));
-  const trend = movingAverage(data.weights.filter((item) => item.record_date <= date),7);
+  const trend = primaryWeightTrend(data.weights.filter((item) => item.record_date<=date),7).trend;
   const latest = trend.at(-1);
   const earlier = trend.findLast((item) => item.record_date <= addDays(date,-7)) || trend[0];
   const weeklyTrend = latest && earlier && latest.record_date !== earlier.record_date ? Number((latest.moving_average-earlier.moving_average).toFixed(1)) : null;
   const intake = dailyNutrition(data.meals.filter((meal) => meal.record_date === date));
-  const targets = calculateNutritionTargets(data.profile).targets;
   let adjusted = 0;
   for (const task of allTasks) {
     if (task.date < date || task.date === date && task.time < now) continue;
@@ -206,5 +224,5 @@ export function adjustPlanAfterActuals(data: AppData,date: string,cause: "weight
       id:task.id,user_id:data.profile.user_id,record_date:task.date,source:"system",updated_at:new Date().toISOString(),
     }));
   }
-  return { ...data,task_updates: [...current.values()].sort((a,b) => a.record_date.localeCompare(b.record_date) || a.id.localeCompare(b.id)) };
+  return { ...data,coach_events,task_updates: [...current.values()].sort((a,b) => a.record_date.localeCompare(b.record_date) || a.id.localeCompare(b.id)) };
 }

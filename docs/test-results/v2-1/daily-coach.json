@@ -1,0 +1,40 @@
+{
+  "results": [
+    "Two same-day weigh-ins remain separate; evening after-meal weight does not replace the morning baseline.",
+    "Text and photo meal saves return home after photo persistence; unknown nutrition is not displayed as zero, and the local reminder updates immediately.",
+    "Weight and exercise editing update the original IDs without duplicates; completed plan tasks are preserved while recovery advice responds to discomfort.",
+    "Full ZIP preview, automatic pre-restore backup and merge retain multi-weigh-in context, photos, execution history and append-only coach events."
+  ],
+  "navigation_targets": [
+    {
+      "label": "今日",
+      "width": 57.59375,
+      "height": 56
+    },
+    {
+      "label": "日历",
+      "width": 57.59375,
+      "height": 56
+    },
+    {
+      "label": "记录",
+      "width": 57.609375,
+      "height": 56
+    },
+    {
+      "label": "趋势",
+      "width": 57.59375,
+      "height": 56
+    },
+    {
+      "label": "我的",
+      "width": 57.59375,
+      "height": 56
+    }
+  ],
+  "page_errors": [],
+  "external_requests": [],
+  "paid_requests": [],
+  "browser": "156.0.8078.79",
+  "keyboard_check": "Reduced 390x480 visual viewport and scroll/focus tested; physical mobile keyboard not available."
+}

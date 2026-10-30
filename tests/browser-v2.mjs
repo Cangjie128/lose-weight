@@ -14,7 +14,7 @@ const url = process.env.PREVIEW_URL || "http://127.0.0.1:3004/";
 if (!["localhost","127.0.0.1"].includes(new URL(url).hostname)) throw Error("Browser acceptance runs only against a local isolated preview.");
 const output = path.resolve("outputs/v2-acceptance"); await mkdir(output,{ recursive: true });
 const results = []; const failures = []; const external = []; const metrics = {};
-const data = buildDefaultData("demo-local-user"); data.profile.age = 30; data.profile.health_notes = "PRIVATE_HEALTH_NOTE";
+const data = buildDefaultData("demo-local-user"); data.profile.age = 30; data.profile.profile_confirmed_at=new Date().toISOString(); data.profile.health_notes = "PRIVATE_HEALTH_NOTE";
 data.weights = Array.from({ length: 30 },(_,index) => ({ id: uid(),user_id: data.profile.user_id,record_date: addDays(todayString(),index-29),weight_kg: Number((56-index*0.03).toFixed(2)),note: "PRIVATE_WEIGHT_NOTE",high_salt: false,late_dinner: false,menstrual_period: false,bowel_movement: true,poor_sleep: false,hard_training_previous_day: false }));
 const browser = await playwright.chromium.launch({ headless: true,...(process.env.CHROME_PATH || process.platform === "win32" ? { executablePath: process.env.CHROME_PATH || "C:/Program Files/Google/Chrome/Application/chrome.exe" } : {}) });
 const context = await browser.newContext({ viewport: { width: 1365,height: 950 },locale: "zh-CN",timezoneId: "Asia/Shanghai",acceptDownloads: true });
@@ -26,7 +26,11 @@ await context.route("**/*",async (route) => {
 await context.addInitScript(({ data }) => { if (!localStorage.getItem("__v2_test_seed")) { localStorage.setItem("gentle-fat-loss-coach-demo-data",JSON.stringify(data)); localStorage.setItem("__v2_test_seed","1"); } },{ data });
 const page = await context.newPage(); page.on("pageerror",(error) => failures.push(error.message)); page.on("dialog",(dialog) => dialog.accept());
 page.setDefaultTimeout(20000);
-const nav = async (name) => page.getByRole("button",{ name,exact: true }).filter({ visible: true }).first().click();
+const nav = async (name) => {
+  const mapped={"设置":"我的","饮食":"饮食记录管理","运动":"运动记录管理","AI教练":"主动深度分析"};
+  if(["饮食","运动","AI教练"].includes(name)) await page.getByRole("button",{name:"我的",exact:true}).filter({visible:true}).first().click();
+  await page.getByRole("button",{name:mapped[name] || name,exact:true}).filter({visible:true}).first().click();
+};
 async function saved() {
   return page.evaluate(async () => {
     const db = await new Promise((resolve,reject) => { const request = indexedDB.open("gentle-fat-loss-coach-v2",1); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); });
@@ -51,10 +55,10 @@ async function layout(label) {
 try {
   const start = Date.now(); await page.goto(url); await page.getByText("本地演示模式",{ exact: true }).waitFor(); metrics.initial_load_ms = Date.now()-start;
   assert.equal((await saved()).weights.length,30);
-  await page.locator(".plan-records > summary").click();
+  await page.getByRole("button",{name:"记录体重",exact:true}).click();
   await page.getByLabel("体重 kg",{ exact: true }).fill("54.8"); await page.getByRole("button",{ name: "保存体重",exact: true }).click();
-  await until(async () => (await saved()).weights.find((record) => record.record_date === todayString()).weight_kg === 54.8);
-  await page.reload(); await page.locator(".plan-records > summary").click(); assert.equal(await page.getByLabel("体重 kg",{ exact: true }).inputValue(),"54.8");
+  await until(async () => (await saved()).weights.some((record) => record.record_date === todayString() && record.weight_kg === 54.8));
+  await page.reload();assert.equal((await saved()).weights.length,31);assert.equal((await saved()).weights.some((record) => record.weight_kg===54.8),true);
   results.push("30 calendar days load; weight save and refresh persistence pass.");
   await page.screenshot({ path: path.join(output,"today-desktop.png"),fullPage: true }); await layout("desktop today");
 
@@ -87,8 +91,8 @@ try {
   assert.equal(await meal.locator('img[alt="餐食照片"]').count(),100);
   assert.ok((await saved()).meals[0].images.every((image) => image.size_bytes <= 300*1024 && image.storage_path.startsWith("idb:")));
   assert.equal(await page.evaluate(() => localStorage.getItem("gentle-fat-loss-coach-demo-data").includes("base64")),false);
-  await nav("今日"); await page.locator(".plan-nutrition > summary").click(); await page.getByText("已摄入估计 400–500 kcal",{ exact: true }).waitFor();
-  assert.equal(await page.getByRole("progressbar",{ name: "蛋白质摄入进度" }).getAttribute("value"),"25");
+  await nav("今日"); await page.getByText("已摄入估计 400–500 kcal",{ exact: true }).first().waitFor();
+  assert.equal(await page.getByRole("progressbar",{ name: "蛋白质摄入进度" }).first().getAttribute("value"),"25");
   results.push("100 actual JPEG uploads, <=1200px compression, IndexedDB storage and deterministic macro progress pass.");
 
   await nav("运动"); await page.getByLabel("时长 分钟",{ exact: true }).fill("25");

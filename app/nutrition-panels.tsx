@@ -2,37 +2,39 @@
 import { useState } from "react";
 import { Activity, Save, Utensils } from "lucide-react";
 import type { AppData, MealNutrition } from "@/lib/fat-loss";
-import { calculateNutritionTargets, dailyNutrition, exerciseSuggestion, nextMealSuggestion } from "@/lib/nutrition";
+import { dailyNutrition, exerciseSuggestion, nextMealSuggestion } from "@/lib/nutrition";
 import { mealNutritionSchema } from "@/lib/schemas";
+import { dailyCoachSnapshot } from "@/lib/daily-coach";
 
-export function NutritionOverview({ data, date }: { data: AppData; date: string }) {
+export function NutritionOverview({ data, date,compact=false }: { data: AppData; date: string;compact?:boolean }) {
   const meals = data.meals.filter((meal) => meal.record_date === date);
   const intake = dailyNutrition(meals);
-  const { targets, explanation } = calculateNutritionTargets(data.profile);
+  const snapshot=dailyCoachSnapshot(data,date);
+  const targets=snapshot.targets; const explanation=snapshot.targetExplanation;
   const exercise = exerciseSuggestion(data, date);
   return (
-    <section className="border-y border-[#eadfcf] bg-white/70 px-4 py-5">
-      <h3 className="flex items-center gap-2 text-lg font-bold"><Utensils className="h-5 w-5 text-[#4f8d5f]" />每日营养与恢复</h3>
+    <section className={compact ? "nutrition-compact" : "border-y border-[#eadfcf] bg-white/70 px-4 py-5"}>
+      {!compact && <h3 className="flex items-center gap-2 text-lg font-bold"><Utensils className="h-5 w-5 text-[#4f8d5f]" />每日营养与恢复</h3>}
       <div className="mt-3 flex flex-wrap items-baseline justify-between gap-2">
-        <p className="text-sm text-[#667165]">热量目标 <strong className="text-[#25342f]">{targets ? `${targets.calories} kcal` : "未设置"}</strong></p>
-        <p className="font-semibold">已摄入估计 {Math.round(intake.calories_min)}–{Math.round(intake.calories_max)} kcal</p>
+        {!compact && <p className="text-sm text-[#667165]">热量目标 <strong className="text-[#25342f]">{targets ? `${targets.calories} kcal` : "未设置"}</strong></p>}
+        <p className="font-semibold">已摄入估计 {intake.recorded ? `${Math.round(intake.calories_min)}–${Math.round(intake.calories_max)} kcal` : intake.unknown ? "未知，待补充" : "暂无记录"}</p>
       </div>
-      <p className="mt-1 text-xs text-[#667165]">{explanation}{intake.unknown > 0 ? ` 还有 ${intake.unknown} 餐营养未完整填写，当前合计不代表全天摄入。` : ""}</p>
-      <p className="mt-1 text-xs text-[#667165]">营养累计只基于已确认的饮食记录；任务打勾不会虚构摄入，空白不代表没有吃。</p>
-      <div className="mt-4 grid gap-4 sm:grid-cols-3">
+      {!compact && <p className="mt-1 text-xs text-[#667165]">{explanation}</p>}
+      {intake.unknown>0 && <p className="mt-1 text-xs text-[#8a5b2d]">还有 {intake.unknown} 餐营养未知，当前合计不代表全天摄入。</p>}
+      <div className={compact ? "mt-4 grid grid-cols-3 gap-3" : "mt-4 grid gap-4 sm:grid-cols-3"}>
         {[
           { label: "蛋白质", value: intake.protein_g, goal: targets?.protein_g, color: "#438e74" },
           { label: "脂肪", value: intake.fat_g, goal: targets?.fat_g, color: "#c98548" },
           { label: "碳水", value: intake.carbohydrate_g, goal: targets?.carbohydrate_g, color: "#548db4" },
         ].map((item) => <div key={item.label}>
-          <div className="mb-2 flex justify-between gap-2 text-sm"><span>{item.label}</span><span>{item.value.toFixed(1)} / {item.goal ?? "未设置"} g</span></div>
+          <div className={compact ? "mb-2 flex flex-col gap-1 text-xs" : "mb-2 flex justify-between gap-2 text-sm"}><span>{item.label}</span><span>{!intake.recorded && intake.unknown ? "未知" : item.value.toFixed(1)} / {item.goal ?? "未设置"} g</span></div>
           <progress aria-label={`${item.label}摄入进度`} value={item.value} max={item.goal || 1} className="h-2 w-full" style={{ accentColor: item.color }} />
         </div>)}
       </div>
-      <div className="mt-5 grid gap-4 border-t border-[#eadfcf] pt-4 md:grid-cols-2">
+      {!compact && <div className="mt-5 grid gap-4 border-t border-[#eadfcf] pt-4 md:grid-cols-2">
         <div><h4 className="text-sm font-bold">下一餐建议</h4><p className="mt-2 text-sm leading-6 text-[#667165]">{nextMealSuggestion(meals, targets)}</p></div>
         <div><h4 className="flex items-center gap-1 text-sm font-bold"><Activity className="h-4 w-4" />当天运动建议</h4><p className="mt-2 text-sm font-medium">{exercise.activity} · {exercise.duration}</p><p className="mt-1 text-sm leading-6 text-[#667165]">强度：{exercise.intensity}。{exercise.reason}</p></div>
-      </div>
+      </div>}
     </section>
   );
 }

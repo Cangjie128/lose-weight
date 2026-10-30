@@ -79,6 +79,7 @@ export type Profile = {
   nutrition_targets?: NutritionTargets | null;
   needs_professional_guidance?: boolean;
   planning?: PlanningPreferences;
+  profile_confirmed_at?: string;
   created_at?: string;
   updated_at?: string;
 };
@@ -121,6 +122,10 @@ export type WeightRecord = {
   bowel_movement: boolean;
   poor_sleep: boolean;
   hard_training_previous_day: boolean;
+  weighing_period?: "morning_fasting" | "daytime" | "evening_after_meal" | "other";
+  weighed_at?: string;
+  food_state?: "fasting" | "before_meal" | "after_meal" | "unspecified";
+  bowel_state?: "before" | "after" | "unspecified";
   created_at?: string;
   updated_at?: string;
 };
@@ -209,6 +214,7 @@ export type AppData = {
   summaries: DailyAiSummaryRecord[];
   plans?: WeekPlan[];
   task_updates?: TaskUpdate[];
+  coach_events?: { id:string;record_date:string;created_at:string;cause:"weight"|"meal"|"recovery"|"profile";message:string;targets:NutritionTargets|null }[];
 };
 
 export function formatDate(date: Date) {

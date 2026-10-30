@@ -1,5 +1,7 @@
 # 减肥计划自托管架构
 
+V2.1 数据契约：体重以记录 ID 唯一，同一用户同一天允许多次测量；新增可选 `weighing_period`、`weighed_at`、`food_state`、`bowel_state`，旧字段缺失不推断。快照增加 `profile_confirmed_at` 和追加式 `coach_events`（含当日目标快照）；历史编辑不静默覆盖已完成任务。独立 PostgreSQL `snapshots.payload` 可以容纳这些字段，后续细分表不得重新加入体重的“用户+日期”唯一约束。本轮只更新契约，不运行迁移或部署。[V2.1 验收报告](V2_1_TEST_REPORT.md)。
+
 ## 当前决策
 
 最终部署只使用用户自己的 Oracle Cloud 服务器，不使用 Supabase。当前交付是本地产品原型，不是可直接部署的生产后端。不会在本轮登录服务器、安装服务、修改生产数据库或切换域名。

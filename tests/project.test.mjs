@@ -16,7 +16,10 @@ test("contains the expected app surfaces", async () => {
   assert.match(app, /AI分析/);
   assert.match(app, /7日移动平均/);
   assert.match(app, /本地演示模式/);
-  assert.match(app, /记录今日体重/);
+  assert.match(app, /每日个性化减肥教练/);
+  assert.match(app, /记录体重/);
+  assert.match(app, /添加一条记录/);
+  assert.match(app, /完整详情/);
   assert.doesNotMatch(layout + app,/拾光计划|SHIGUANG/);
   assert.match(mealApi, /handleAiRequest\(request, "meal"\)/);
   assert.match(summaryApi, /handleAiRequest\(request, "summary"\)/);

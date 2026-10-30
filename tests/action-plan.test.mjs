@@ -81,15 +81,15 @@ test("weight, meals and recovery adjust only pending non-manual future tasks",()
   data.checkins=[{ record_date:date,fatigue_level:8,sleep_hours:5,body_feeling:"疲劳" }];
   const completed=data.plans[0].days[1].tasks[0]; const manual=data.plans[0].days[1].tasks[1];
   data.task_updates=[update(data,completed,{ status:"completed" }),update(data,manual,{ status:"later",amount:"用户自己安排的正常餐" })];
-  const afterWeight=adjustPlanAfterActuals(data,date,"weight");
+  const afterWeight=adjustPlanAfterActuals(data,date,"weight",date);
   assert.equal(afterWeight.task_updates.find(item=>item.id===completed.id).status,"completed");
   assert.equal(afterWeight.task_updates.find(item=>item.id===manual.id).amount,"用户自己安排的正常餐");
   assert.ok(afterWeight.task_updates.some(item=>item.source==="system" && /7 日趋势|记录仍少/.test(item.note)));
   const movement=data.plans[0].days.filter(day=>day.date>=date).flatMap(day=>day.tasks).find(task=>task.kind==="exercise");
-  const afterRecovery=adjustPlanAfterActuals(data,date,"recovery");
+  const afterRecovery=adjustPlanAfterActuals(data,date,"recovery",date);
   assert.equal(afterRecovery.task_updates.find(item=>item.id===movement.id)?.recovery,true);
   const mealData=fixture(); mealData.meals=[{ record_date:date,meal_type:"breakfast",food_name:"粥",images:[],nutrition:{ calories_min:200,calories_max:250,protein_g:2,fat_g:1,carbohydrate_g:45 } }];
-  const afterMeal=adjustPlanAfterActuals(mealData,date,"meal");
+  const afterMeal=adjustPlanAfterActuals(mealData,date,"meal",date);
   assert.ok(afterMeal.task_updates.some(item=>item.source==="system" && /蛋白质/.test(item.note)));
 });
 

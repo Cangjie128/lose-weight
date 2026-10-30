@@ -1,0 +1,14 @@
+{
+  "results": [
+    "New user explicitly confirms blank profile fields before receiving 49 concrete actions; home/trend new weight fields start blank and same-day records remain separate.",
+    "Meal completion explicitly confirms approximate intake; skip, cross-day reschedule and replacement survive refresh.",
+    "Home camera stores a real JPEG linked to the plan; refresh preserves it without invented nutrition or automatic AI calls.",
+    "Confirmed actual training duration is recorded and task progress is synchronized.",
+    "Weekly review creates a second week without overwriting the original plan or records.",
+    "Plans, preferences, records, task-linked photo bytes and execution updates survive full ZIP restore/re-export."
+  ],
+  "page_errors": [],
+  "external_requests": [],
+  "paid_requests": [],
+  "browser": "156.0.8078.79"
+}

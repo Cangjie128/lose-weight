@@ -11,6 +11,7 @@ import {
   Camera,
   Check,
   ChevronDown,
+  ChevronRight,
   Download,
   Droplets,
   Dumbbell,
@@ -28,6 +29,7 @@ import {
   Utensils,
   Upload,
   Waves,
+  X,
 } from "lucide-react";
 import {
   CartesianGrid,
@@ -60,9 +62,9 @@ import {
   emptyTasks,
   exerciseTypes,
   formatDate,
+  formatChineseDate,
   getRecordForDate,
   mealTypeLabels,
-  movingAverage,
   normalizeTasks,
   todayString,
   uid,
@@ -92,6 +94,7 @@ import { exportZipBackup, type PreparedBackup } from "@/lib/zip-backup";
 import { cloudRetainedPhotos, cloudStorageUsage, fetchAllRows, readCloudPhoto, restoreCloudBackup } from "@/lib/cloud-storage";
 import { activityLabels, calculateNutritionTargets } from "@/lib/nutrition";
 import { invalidateChangedAnalysis,nutritionFromAnalysis,recalculateMealAnalysis } from "@/lib/meal-analysis";
+import { bowelStateLabels,dailyCoachSnapshot,foodStateLabels,isProfileReady,latestPrimaryWeight,primaryWeightTrend,weighingPeriodLabels,weightConditionLabel } from "@/lib/daily-coach";
 
 type TabKey =
   | "today"
@@ -99,6 +102,7 @@ type TabKey =
   | "exercise"
   | "trends"
   | "calendar"
+  | "history"
   | "coach"
   | "settings";
 
@@ -109,13 +113,19 @@ const demoStorageKey = legacyStorageKey;
 
 const tabs: Array<{ key: TabKey; label: string; icon: typeof Home }> = [
   { key: "today", label: "今日", icon: Home },
-  { key: "meals", label: "饮食", icon: Utensils },
-  { key: "exercise", label: "运动", icon: Dumbbell },
-  { key: "trends", label: "趋势", icon: LineChartIcon },
   { key: "calendar", label: "日历", icon: CalendarDays },
-  { key: "coach", label: "AI教练", icon: Sparkles },
-  { key: "settings", label: "设置", icon: Settings },
+  { key: "trends", label: "趋势", icon: LineChartIcon },
+  { key: "settings", label: "我的", icon: Settings },
 ];
+
+type RecordDialogState =
+  | { kind: "menu" }
+  | { kind: "profile" }
+  | { kind: "weight"; record?: WeightRecord }
+  | { kind: "meal"; record?: MealRecord }
+  | { kind: "exercise"; record?: ExerciseRecord }
+  | { kind: "checkin" }
+  | null;
 
 function omitRuntimeFields<T extends Record<string, unknown>>(record: T) {
   const dbRecord = { ...record };
@@ -217,12 +227,13 @@ export default function FatLossApp() {
   const [aiPendingId, setAiPendingId] = useState<string | null>(null);
   const [summaryPending, setSummaryPending] = useState(false);
   const [trendRange, setTrendRange] = useState<7 | 30>(30);
+  const [recordDialog,setRecordDialog] = useState<RecordDialogState>(null);
 
   const isDemo = !supabaseConfigured || !supabase;
   const userId = user?.id ?? demoUserId;
 
   useEffect(() => {
-    if (!isDemo || !data || loading || data.plans?.length) return;
+    if (!isDemo || !data || loading || data.plans?.length || !isProfileReady(data)) return;
     const current = dataRef.current;
     if (!current || current.plans?.length) return;
     void updateLocal((value) => ({ ...value,plans: [generateWeekPlan(value,todayString())] }));
@@ -257,6 +268,10 @@ export default function FatLossApp() {
     }
   }
 
+  function openRecordDialog(next:RecordDialogState) {
+    showToast(null); setRecordDialog(next);
+  }
+
   function replaceData(next: AppData | null) {
     dataRef.current = next;
     setData(next);
@@ -275,6 +290,7 @@ export default function FatLossApp() {
       } catch (error) {
         storageUnsaved.current = true;
         setStorageIssue(error instanceof Error ? `${error.message} 最新改动尚未写入设备，请先导出备份。` : "浏览器存储空间不足或无法写入，最新改动仅保留在当前页面。请先导出备份，再刷新或关闭页面。");
+        showToast({ type:"error",message:"改动尚未写入设备，输入仍保留在当前页面。请先导出备份并检查存储空间，勿刷新或关闭。" },false);
       }
     }
   }
@@ -583,13 +599,16 @@ export default function FatLossApp() {
       completion_score: completionFromTasks(tasks),
     };
 
-    await updateLocal((current) => adjustPlanAfterActuals({
+    await updateLocal((current) => {
+      const changed = {
       ...current,
       checkins: [
         ...current.checkins.filter((item) => item.id !== next.id),
         next,
       ].sort((a, b) => a.record_date.localeCompare(b.record_date)),
-    }, selectedDate, "recovery"));
+      };
+      return Object.keys(patch).some((key) => key!=="tasks") ? adjustPlanAfterActuals(changed,selectedDate,"recovery") : changed;
+    });
 
     try {
       await upsertRemote("daily_checkins", omitRuntimeFields(next));
@@ -611,18 +630,20 @@ export default function FatLossApp() {
   }
 
   async function saveProfile(nextProfile: Profile) {
+    nextProfile = { ...nextProfile,profile_confirmed_at:new Date().toISOString() };
     const height = asNumber(nextProfile.height_cm);
     const startWeight = asNumber(nextProfile.starting_weight_kg);
     const targetWeight = asNumber(nextProfile.target_weight_kg);
     if (height < 100 || height > 230) {
       showToast({ type: "error", message: "身高请输入 100-230 cm 之间。" });
-      return;
+      return false;
     }
     if (startWeight <= targetWeight) {
       showToast({ type: "error", message: "目标体重需要低于起始体重。" });
-      return;
+      return false;
     }
-    if (nextProfile.age !== null && nextProfile.age !== undefined && (nextProfile.age < 18 || nextProfile.age > 100)) { showToast({ type: "error", message: "年龄请填写 18–100 岁；此减脂目标工具仅面向成年人。" }); return; }
+    if (!nextProfile.age || nextProfile.age<18 || nextProfile.age>100 || !Number.isInteger(nextProfile.age)) { showToast({ type: "error",message:"请确认 18–100 岁的真实年龄。" }); return false; }
+    if (![nextProfile.current_weight_kg,startWeight,targetWeight].every((weight) => Number.isFinite(weight) && weight>=30 && weight<=200)) { showToast({ type:"error",message:"当前、起始及目标体重必须为 30–200 kg。" }); return false; }
     if (!planningPreferencesSchema.safeParse(nextProfile.planning || {}).success) { showToast({ type: "error",message: "每天运动时间请填写 5–90 分钟，并检查计划偏好。" }); return; }
     if (nextProfile.nutrition_targets && !nutritionTargetsSchema.safeParse(nextProfile.nutrition_targets).success) { showToast({ type: "error", message: "营养目标超出温和调整范围，请检查热量和宏量营养素。" }); return; }
     if (!nextProfile.challenge_start_date || !nextProfile.challenge_end_date || nextProfile.challenge_end_date < nextProfile.challenge_start_date) { showToast({ type: "error", message: "挑战结束日期不能早于开始日期。" }); return; }
@@ -631,12 +652,15 @@ export default function FatLossApp() {
     try {
       await upsertRemote("profiles", omitRuntimeFields(nextProfile));
       await upsertRemote("challenges", omitRuntimeFields(challenge));
+      if (storageUnsaved.current) return false;
       showToast({ type: "success", message: "个人设置已保存。" });
+      return true;
     } catch (error) {
       showToast({
         type: "error",
         message: error instanceof Error ? error.message : "保存设置失败。",
       });
+      return false;
     }
   }
 
@@ -644,17 +668,17 @@ export default function FatLossApp() {
     const roundedWeight = Number(record.weight_kg.toFixed(1));
     if (!Number.isFinite(roundedWeight) || roundedWeight < 30 || roundedWeight > 200) {
       showToast({ type: "error", message: "体重请输入 30-200 kg 之间。" });
-      return;
+      return false;
     }
     let savedRecord = { ...record,weight_kg: roundedWeight };
     await updateLocal((current) => {
-      const existing = current.weights.find((item) => item.record_date === record.record_date);
-      savedRecord = { ...record,id:existing?.id || record.id,weight_kg:roundedWeight,updated_at:new Date().toISOString() };
+      const existing = current.weights.find((item) => item.id === record.id);
+      savedRecord = { ...record,id:existing?.id || record.id,weight_kg:roundedWeight,created_at:existing?.created_at || record.created_at || new Date().toISOString(),updated_at:new Date().toISOString() };
       const weights = [
-        ...current.weights.filter((item) => item.record_date !== record.record_date),
+        ...current.weights.filter((item) => item.id !== savedRecord.id),
         savedRecord,
-      ].sort((a,b) => a.record_date.localeCompare(b.record_date));
-      const latest = [...weights].filter((item) => item.record_date <= todayString()).at(-1);
+      ].sort((a,b) => a.record_date.localeCompare(b.record_date) || (a.weighed_at || "99:99").localeCompare(b.weighed_at || "99:99"));
+      const latest = latestPrimaryWeight(weights.filter((item) => item.record_date <= todayString()));
       return adjustPlanAfterActuals({
         ...current,
         profile: latest ? { ...current.profile,current_weight_kg:latest.weight_kg,updated_at:new Date().toISOString() } : current.profile,
@@ -665,12 +689,15 @@ export default function FatLossApp() {
       await upsertRemote("weight_records", omitRuntimeFields(savedRecord));
       if (!isDemo && dataRef.current) await upsertRemote("profiles",omitRuntimeFields(dataRef.current.profile));
       if (record.record_date === selectedDate) await setTask("weighed", true);
+      if (storageUnsaved.current) return false;
       showToast({ type: "success", message: "体重已保存，趋势、营养目标和未完成计划已更新。" });
+      return true;
     } catch (error) {
       showToast({
         type: "error",
         message: error instanceof Error ? error.message : "保存体重失败。",
       });
+      return false;
     }
   }
 
@@ -682,10 +709,10 @@ export default function FatLossApp() {
     }
     await updateLocal((current) => {
       const weights = current.weights.filter((item) => item.id !== record.id);
-      const latest = [...weights].filter((item) => item.record_date <= todayString()).sort((a,b) => a.record_date.localeCompare(b.record_date)).at(-1);
+      const latest = latestPrimaryWeight(weights.filter((item) => item.record_date <= todayString()));
       return { ...current,weights,profile:{ ...current.profile,current_weight_kg:latest?.weight_kg ?? current.profile.starting_weight_kg } };
     });
-    if (record.record_date === selectedDate) await setTask("weighed", false);
+    if (record.record_date === selectedDate && !dataRef.current?.weights.some((item) => item.record_date === selectedDate)) await setTask("weighed", false);
   }
 
   async function saveMeal(record: MealRecord) {
@@ -704,6 +731,7 @@ export default function FatLossApp() {
     try {
       await upsertRemote("meal_records", omitRuntimeFields(record));
       if (record.meal_type !== "snack") await setTask(record.meal_type, true);
+      if (storageUnsaved.current) return false;
       showToast({ type: "success", message: "饮食记录已保存，已根据实际饮食更新计划。" });
       return true;
     } catch (error) {
@@ -729,7 +757,7 @@ export default function FatLossApp() {
     showToast({ type: "success", message: "饮食记录已删除。" });
   }
 
-  async function uploadMealImages(record: MealRecord, files: FileList | null) {
+  async function uploadMealImages(record: MealRecord, files: FileList | File[] | null) {
     if (!files?.length) return false;
     if (files.length > 6) { showToast({ type: "error",message: "单次最多上传 6 张照片，请分批添加。未丢弃任何现有照片。" }); return false; }
     setSaving(true);
@@ -875,7 +903,7 @@ export default function FatLossApp() {
   async function saveExercise(record: ExerciseRecord) {
     if (!record.duration_min || record.duration_min <= 0) {
       showToast({ type: "error", message: "请填写有效运动时长。" });
-      return;
+      return false;
     }
     await updateLocal((current) => adjustPlanAfterActuals({
       ...current,
@@ -887,12 +915,15 @@ export default function FatLossApp() {
     try {
       await upsertRemote("exercise_records", omitRuntimeFields(record));
       await setTask("exercise", true);
+      if (storageUnsaved.current) return false;
       showToast({ type: "success", message: "运动记录已保存。" });
+      return true;
     } catch (error) {
       showToast({
         type: "error",
         message: error instanceof Error ? error.message : "保存运动失败。",
       });
+      return false;
     }
   }
 
@@ -954,7 +985,6 @@ export default function FatLossApp() {
   const selectedCheckin =
     getRecordForDate(data.checkins, selectedDate) ??
     buildDefaultCheckin(userId, selectedDate);
-  const todayWeight = getRecordForDate(data.weights, selectedDate);
   const selectedSummary = getRecordForDate(data.summaries, selectedDate);
 
   return (
@@ -993,7 +1023,7 @@ export default function FatLossApp() {
         <section className="min-w-0 flex-1 pb-24 lg:pb-4">
           <TopBar
             selectedDate={selectedDate}
-            setSelectedDate={setSelectedDate}
+            setSelectedDate={(date) => { setSelectedDate(date); if(date!==todayString()) setActiveTab("history"); }}
             isDemo={isDemo}
             onRefresh={() => { if (supabase && user) void loadRemoteData(supabase, user.id); }}
           />
@@ -1021,11 +1051,11 @@ export default function FatLossApp() {
 
           {activeTab === "today" && (
             <div className="space-y-5">
-            <WeightEntryCard key={`home-weight-${selectedDate}-${todayWeight?.id ?? "new"}`} data={data} selectedDate={selectedDate} record={todayWeight} onDate={setSelectedDate} onSave={saveWeight} onDelete={deleteWeight} />
-            <ActionPlan data={data} date={selectedDate} busy={backupBusy || saving} onDate={setSelectedDate} onGenerate={generatePlan} onUpdate={updatePlanTask} onComplete={completePlanTask} onPhoto={photographPlanMeal} onRecords={() => setActiveTab("meals")} onSettings={() => setActiveTab("settings")} />
+            <DailyCoachHome data={data} date={selectedDate} onRecord={(kind) => openRecordDialog({ kind })} onSettings={() => data.profile.profile_confirmed_at ? setActiveTab("settings") : openRecordDialog({ kind:"profile" })} onHistory={() => setActiveTab("history")} />
+            {isProfileReady(data) && <ActionPlan data={data} date={selectedDate} busy={backupBusy || saving} onDate={setSelectedDate} onGenerate={generatePlan} onUpdate={updatePlanTask} onComplete={completePlanTask} onPhoto={photographPlanMeal} onRecords={() => openRecordDialog({ kind:"meal" })} onSettings={() => setActiveTab("settings")} />}
             <details className="plan-records"><summary>饮水与身体状态 <ChevronDown className="h-4 w-4" /></summary>
             <TodayPage
-              key={`today-${selectedDate}-${todayWeight?.id ?? "new"}`}
+              key={`today-${selectedDate}`}
               data={data}
               selectedDate={selectedDate}
               selectedCheckin={selectedCheckin}
@@ -1083,6 +1113,10 @@ export default function FatLossApp() {
             />
           )}
 
+          {activeTab === "history" && (
+            <DailyHistoryPage data={data} date={selectedDate} onBack={() => setActiveTab("calendar")} onEditWeight={(record) => openRecordDialog({ kind:"weight",record })} onEditMeal={(record) => openRecordDialog({ kind:"meal",record })} onEditExercise={(record) => openRecordDialog({ kind:"exercise",record })} onEditCheckin={() => openRecordDialog({ kind:"checkin" })} onPlan={() => setActiveTab("today")} />
+          )}
+
           {activeTab === "coach" && (
             <CoachPage
               data={data}
@@ -1096,6 +1130,9 @@ export default function FatLossApp() {
           )}
 
           {activeTab === "settings" && (
+            <div className="space-y-4">
+            <div className="flex flex-wrap gap-2"><button className="plan-button" onClick={() => setActiveTab("meals")}><Utensils size={16}/>饮食记录管理</button><button className="plan-button" onClick={() => setActiveTab("exercise")}><Dumbbell size={16}/>运动记录管理</button><button className="plan-button" onClick={() => setActiveTab("coach")}><Sparkles size={16}/>主动深度分析</button></div>
+            {!data.profile.profile_confirmed_at && <div className="border-l-4 border-[#e48945] bg-white p-4"><p>请先确认真实资料，未使用示例体重或目标。</p><button className="plan-button primary mt-3" onClick={() => openRecordDialog({ kind:"profile" })}>完善个人资料</button></div>}
             <SettingsPage
               key={`settings-${data.profile.id}-${data.profile.updated_at ?? "draft"}`}
               data={data}
@@ -1109,13 +1146,14 @@ export default function FatLossApp() {
               getCloudUsage={async () => cloudStorageUsage(supabase!,data)}
               onBackupError={(message) => showToast({ type: "error", message })}
             />
+            </div>
           )}
         </section>
       </div>
 
       <nav className="fixed inset-x-0 bottom-0 z-20 border-t border-[#eadfcf] bg-white/95 px-2 py-2 shadow-[0_-8px_20px_rgba(58,47,34,0.08)] lg:hidden">
-        <div className="mx-auto grid max-w-3xl grid-cols-7 gap-1">
-          {tabs.map((tab) => {
+        <div className="mx-auto grid max-w-3xl grid-cols-5 gap-1">
+          {tabs.slice(0,2).map((tab) => {
             const Icon = tab.icon;
             return (
               <button
@@ -1133,8 +1171,26 @@ export default function FatLossApp() {
               </button>
             );
           })}
+          <button onClick={() => openRecordDialog({ kind:"menu" })} className="flex min-h-14 flex-col items-center justify-center rounded-md bg-[#4f8d5f] text-xs font-bold text-white shadow-sm" aria-label="添加记录"><Plus className="h-6 w-6" /><span className="mt-1 leading-none">记录</span></button>
+          {tabs.slice(2).map((tab) => {
+            const Icon = tab.icon;
+            return <button key={tab.key} onClick={() => setActiveTab(tab.key)} className={classNames("flex min-h-14 flex-col items-center justify-center rounded-md text-xs font-medium transition",activeTab === tab.key ? "bg-[#e9f5e4] text-[#2f6b3f]" : "text-[#748077] hover:bg-[#f6efe2]")}><Icon className="h-5 w-5" /><span className="mt-1 leading-none">{tab.label}</span></button>;
+          })}
         </div>
       </nav>
+      {recordDialog && <RecordDialog title={recordDialog.kind === "profile" ? "确认个人资料" : recordDialog.kind === "menu" ? "添加一条记录" : recordDialog.kind === "weight" ? (recordDialog.record ? "编辑称重记录" : "记录体重") : recordDialog.kind === "meal" ? (recordDialog.record ? "编辑饮食记录" : "记录饮食") : recordDialog.kind === "exercise" ? (recordDialog.record ? "编辑运动记录" : "记录运动") : "饮水与身体状态"} onClose={() => setRecordDialog(null)}>
+        {toast && <ToastMessage toast={toast} />}
+        {recordDialog.kind === "profile" && <ProfileSetup data={data} onSave={async (profile,weight) => {
+          if (!await saveProfile(profile) || !await saveWeight(weight)) return false;
+          await generatePlan(todayString()); setRecordDialog(null); setActiveTab("today"); return true;
+        }} />}
+        {recordDialog.kind === "menu" && <RecordMenu onChoose={(kind) => openRecordDialog({ kind })} />}
+        {recordDialog.kind === "weight" && <WeightEntryCard key={recordDialog.record?.id || `new-${selectedDate}`} data={data} selectedDate={selectedDate} record={recordDialog.record} onDate={setSelectedDate} onSave={async (record) => { if (await saveWeight(record)) { setRecordDialog(null); if (!recordDialog.record) setActiveTab("today"); } }} onDelete={deleteWeight} />}
+        {recordDialog.kind === "meal" && (recordDialog.record ? <MealCard meal={data.meals.find((meal) => meal.id===recordDialog.record?.id) || recordDialog.record} onSaveMeal={saveMeal} onDeleteMeal={deleteMeal} onUploadImages={async (meal,files) => { await uploadMealImages(meal,files); }} onDeleteImage={deleteMealImage} onAnalyzeMeal={analyzeMeal} aiPending={aiPendingId===recordDialog.record.id} saving={saving} /> : <QuickMealForm key={`new-${selectedDate}`} date={selectedDate} userId={userId} saving={saving} onSave={saveMeal} onUpload={uploadMealImages} onDone={() => { setRecordDialog(null); setActiveTab("today"); }} />)}
+        {recordDialog.kind === "exercise" && <QuickExerciseForm key={recordDialog.record?.id || `new-${selectedDate}`} record={recordDialog.record} date={selectedDate} userId={userId} onSave={async (record) => { if (await saveExercise(record)) { setRecordDialog(null); if (!recordDialog.record) setActiveTab("today"); } }} />}
+        {recordDialog.kind === "exercise" && recordDialog.record && <button className="mt-5 flex min-h-11 items-center gap-2 rounded-md border border-red-200 px-4 text-sm font-semibold text-red-800" onClick={() => void deleteExercise(recordDialog.record!)}><Trash2 size={16}/>删除这条运动记录</button>}
+        {recordDialog.kind === "checkin" && <TodayPage data={data} selectedDate={selectedDate} selectedCheckin={selectedCheckin} onSetTask={setTask} onUpdateCheckin={updateCheckin} />}
+      </RecordDialog>}
     </main>
   );
 }
@@ -1330,19 +1386,97 @@ function MetricCard({
   );
 }
 
-function WeightEntryCard({ data,selectedDate,record,onDate,onSave,onDelete }: { data: AppData;selectedDate:string;record?:WeightRecord;onDate:(date:string)=>void;onSave:(record:WeightRecord)=>Promise<void>;onDelete:(record:WeightRecord)=>Promise<void> }) {
+function DailyCoachHome({ data,date,onRecord,onSettings,onHistory }: { data:AppData;date:string;onRecord:(kind:"weight"|"meal"|"exercise")=>void;onSettings:()=>void;onHistory:()=>void }) {
+  const snapshot = dailyCoachSnapshot(data,date);
+  const movement = snapshot.tasks.find((task) => task.kind === "exercise" || task.id.endsWith(":movement"));
+  return <div className="space-y-4">
+    <section className="border-y border-[#d9e5db] bg-white px-4 py-5 shadow-sm sm:rounded-lg sm:border">
+      <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-xs font-bold text-[#4f8d5f]">每日个性化减肥教练</p><h1 className="mt-1 text-xl font-bold">{formatChineseDate(date)}</h1><p className="mt-2 text-sm text-[#667165]">本地计算提醒 · 不自动调用 AI</p></div><button onClick={onHistory} className="flex min-h-11 items-center gap-2 rounded-md border border-[#d7dfd6] px-3 text-sm font-semibold">查看当天详情<ChevronRight className="h-4 w-4" /></button></div>
+      <div className="mt-5 grid grid-cols-3 gap-2" aria-label="快捷记录">
+        {([["weight","记录体重",Scale],["meal","记录饮食",Utensils],["exercise","记录运动",Dumbbell]] as const).map(([kind,label,Icon]) => <button key={kind} onClick={() => onRecord(kind)} className="flex min-h-16 flex-col items-center justify-center gap-1 rounded-md border border-[#dce5df] bg-[#f8fbf7] px-2 text-sm font-bold text-[#315a3c]"><Icon className="h-5 w-5" />{label}</button>)}
+      </div>
+    </section>
+    {!snapshot.ready ? <section className="border-l-4 border-[#e48945] bg-[#fff7ed] px-4 py-4"><h2 className="font-bold">先确认你的真实资料</h2><p className="mt-2 text-sm leading-6 text-[#72583d]">请在“我的”中确认年龄、身高、活动水平和目标，再记录一次真实体重。完成前不会使用示例体重或目标生成个人热量计划。</p><button onClick={onSettings} className="mt-3 min-h-11 rounded-md bg-[#4f8d5f] px-4 font-semibold text-white">完善个人资料</button></section> : <>
+      <section className="border-y border-[#eadfcf] bg-white px-4 py-5 sm:rounded-lg sm:border">
+        <div className="flex flex-wrap items-end justify-between gap-2"><div><p className="text-xs font-bold text-[#4f8d5f]">今日营养目标</p><h2 className="mt-1 text-xl font-bold">{snapshot.targets ? `推荐总摄入 ${snapshot.targets.calories} kcal` : "暂不自动生成减脂热量"}</h2></div><span className="text-sm text-[#667165]">{snapshot.weightCondition} · 7日变化{snapshot.sevenDayChange === null ? "记录不足" : `${snapshot.sevenDayChange >= 0 ? "+" : ""}${snapshot.sevenDayChange} kg`}</span></div>
+        <details className="mt-3 text-sm text-[#667165]"><summary className="min-h-11 cursor-pointer py-2 font-medium">查看热量计算依据</summary><p className="leading-6">{snapshot.targetExplanation}</p></details>
+        <div className="mt-4"><NutritionOverview data={data} date={date} compact /><p className="mt-4 border-t border-[#e1e8df] pt-3 text-sm font-medium">今日运动：{movement?.kind === "exercise" ? `${movement.duration_min} 分钟` : "恢复 / 休息"} · 已记录 {snapshot.exercises.reduce((sum,item) => sum+item.duration_min,0)} 分钟</p></div>
+      </section>
+    <section className="border-y border-[#eadfcf] bg-white px-4 py-5 sm:rounded-lg sm:border"><div className="flex items-center justify-between"><h2 className="text-lg font-bold">教练即时反馈</h2><span className="text-xs font-bold text-[#4f8d5f]">本地计算</span></div><div className="mt-3 space-y-2">{snapshot.reminders.map((reminder) => <p key={reminder} className="border-l-4 border-[#e5b176] bg-[#fffaf3] px-3 py-2 text-sm leading-6">{reminder}</p>)}</div><p className="mt-4 text-sm font-semibold">今日任务 {snapshot.completed}/{snapshot.tasks.length} 已完成</p><progress value={snapshot.completed} max={snapshot.tasks.length || 1} className="mt-2 h-2 w-full accent-[#4f8d5f]" /></section>
+      <section className="border-y border-[#eadfcf] bg-white px-4 py-5 sm:rounded-lg sm:border"><h2 className="text-lg font-bold">三餐安排</h2><div className="mt-3 grid gap-3 md:grid-cols-3">{snapshot.mealTasks.filter(({ task }) => task.meal_type !== "snack").map(({ task,meal }) => <article key={task.id} className="border-l-4 border-[#e5b176] bg-[#fffaf3] p-3"><p className="text-xs font-bold text-[#8a5b2d]">{task.time} · {task.title}</p><h3 className="mt-2 font-bold">{meal?.title || "按偏好选择正常一餐"}</h3><p className="mt-1 text-sm leading-6 text-[#667165]">{meal?.portion || task.amount}</p></article>)}</div><div className="mt-4 border-t border-[#eee3d3] pt-4"><h3 className="font-bold">下一餐建议</h3><p className="mt-1 text-sm leading-6 text-[#667165]">{snapshot.nextMeal}</p></div></section>
+      <section className="border-y border-[#dbe6dc] bg-white px-4 py-5 sm:rounded-lg sm:border"><div className="flex items-center justify-between gap-3"><h2 className="text-lg font-bold">今日运动计划</h2><span className="rounded bg-[#eef6ea] px-2 py-1 text-xs font-bold text-[#477b55]">{snapshot.exercise.intensity}</span></div><p className="mt-2 font-semibold">{movement?.title || snapshot.exercise.activity} · {movement ? `${movement.duration_min} 分钟` : snapshot.exercise.duration}</p><p className="mt-2 text-sm leading-6 text-[#667165]">{snapshot.exercise.reason}</p>{movement && <ol className="mt-3 space-y-2 border-l-2 border-[#b8cfb6] pl-4 text-sm leading-6">{movement.steps.map((step,index) => <li key={index}>{index+1}. {step}</li>)}</ol>}</section>
+    </>}
+  </div>;
+}
+
+function RecordDialog({ title,onClose,children }: { title:string;onClose:()=>void;children:React.ReactNode }) {
+  const ref=useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    const dialog=ref.current; const prior=document.activeElement as HTMLElement|null;
+    dialog?.showModal(); const overflow=document.body.style.overflow; document.body.style.overflow="hidden";
+    const resize=() => dialog?.style.setProperty("--record-height",`${window.visualViewport?.height || window.innerHeight}px`);
+    resize(); window.visualViewport?.addEventListener("resize",resize);
+    return () => { document.body.style.overflow=overflow; window.visualViewport?.removeEventListener("resize",resize); prior?.focus({ preventScroll:true }); };
+  },[]);
+  return <dialog ref={ref} aria-label={title} onCancel={(event) => { event.preventDefault(); onClose(); }} className="record-dialog"><header className="record-dialog-header"><h2 className="text-xl font-bold">{title}</h2><button onClick={onClose} aria-label="关闭录入窗口" title="关闭" className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md border border-[#d7dfd6]"><X className="h-5 w-5" /></button></header><div className="record-dialog-body">{children}</div></dialog>;
+}
+
+function ProfileSetup({ data,onSave }: { data:AppData;onSave:(profile:Profile,weight:WeightRecord)=>Promise<boolean> }) {
+  const [values,setValues]=useState({ age:"",height:"",weight:"",target:"",gender:"",activity:"",end:"" });
+  const [busy,setBusy]=useState(false); const [error,setError]=useState("");
+  return <form className="space-y-4" onSubmit={async (event) => { event.preventDefault(); if(busy)return; setBusy(true); setError(""); try {
+    const weight=Number(values.weight); const profile={ ...data.profile,age:Number(values.age),height_cm:Number(values.height),current_weight_kg:weight,starting_weight_kg:weight,target_weight_kg:Number(values.target),gender:values.gender,activity_level:values.activity as Profile["activity_level"],challenge_start_date:todayString(),challenge_end_date:values.end,nutrition_targets:null };
+    const record:WeightRecord={ id:uid("weight"),user_id:profile.user_id,record_date:todayString(),weight_kg:weight,note:"用户在首次设置中明确填写的实际体重；称重时段未注明。",high_salt:false,late_dinner:false,menstrual_period:false,bowel_movement:false,poor_sleep:false,hard_training_previous_day:false };
+    if(!await onSave(profile,record))setError("资料尚未保存，请检查填写和设备空间，输入已保留。");
+  } catch(e){setError(e instanceof Error ? e.message : "保存失败，输入已保留。");} finally{setBusy(false);} }}><p className="text-sm leading-6 text-[#667165]">请填写真实资料。不会预填体重或目标，也不会根据目标日期自动加大热量缺口。</p><div className="grid grid-cols-2 gap-3">{([["age","年龄（岁）",18,100],["height","身高 cm",100,230],["weight","实际体重 kg",30,200],["target","目标体重 kg",30,200]] as const).map(([key,label,min,max]) => <label key={key} className="text-sm font-medium">{label}<input required type="number" min={min} max={max} step={key==="age" ? "1" : "0.1"} value={values[key]} onChange={(event)=>setValues({ ...values,[key]:event.target.value })} className="mt-1 w-full rounded-md border border-[#d5ddd6] p-3" /></label>)}<label className="text-sm font-medium">能量公式参考<select aria-label="能量公式参考" required value={values.gender} onChange={(event)=>setValues({ ...values,gender:event.target.value })} className="mt-1 w-full rounded-md border border-[#d5ddd6] p-3"><option value="">请选择</option><option>女性</option><option>男性</option><option>其他</option></select></label><label className="text-sm font-medium">活动水平<select aria-label="活动水平" required value={values.activity} onChange={(event)=>setValues({ ...values,activity:event.target.value })} className="mt-1 w-full rounded-md border border-[#d5ddd6] p-3"><option value="">请选择</option>{Object.entries(activityLabels).map(([key,label])=><option key={key} value={key}>{label}</option>)}</select></label><label className="col-span-2 text-sm font-medium">目标日期<input required type="date" min={todayString()} value={values.end} onChange={(event)=>setValues({ ...values,end:event.target.value })} className="mt-1 w-full rounded-md border border-[#d5ddd6] p-3" /></label></div>{error && <p role="alert" className="text-sm text-red-800">{error}</p>}<button disabled={busy} type="submit" className="flex min-h-12 w-full items-center justify-center gap-2 rounded-md bg-[#4f8d5f] px-4 font-semibold text-white">{busy ? <Loader2 className="h-4 w-4 animate-spin"/> : <Check className="h-4 w-4"/>}确认资料并生成首周计划</button></form>;
+}
+
+function RecordMenu({ onChoose }: { onChoose:(kind:"weight"|"meal"|"exercise")=>void }) {
+  return <div className="grid gap-3 sm:grid-cols-3">{([["weight","体重","记录时段和状态",Scale],["meal","饮食","食物、份量和照片",Utensils],["exercise","运动","项目、强度和感受",Dumbbell]] as const).map(([kind,title,note,Icon]) => <button key={kind} onClick={() => onChoose(kind)} className="flex min-h-24 items-center gap-3 rounded-md border border-[#dce5df] bg-[#f8fbf7] p-4 text-left"><Icon className="h-6 w-6 text-[#4f8d5f]" /><span><strong className="block">记录{title}</strong><small className="mt-1 block text-[#667165]">{note}</small></span></button>)}</div>;
+}
+
+function QuickMealForm({ record,date,userId,saving,onSave,onUpload,onDone }: { record?:MealRecord;date:string;userId:string;saving:boolean;onSave:(record:MealRecord)=>Promise<boolean>;onUpload:(record:MealRecord,files:File[])=>Promise<boolean>;onDone:()=>void }) {
+  const [draft,setDraft] = useState<MealRecord>(record || { id:uid("meal"),user_id:userId,record_date:date,meal_type:"breakfast",food_name:"",portion:"",notes:"",nutrition:null,ai_analysis:null,images:[],created_at:new Date().toISOString() });
+  const [files,setFiles] = useState<File[]>([]);
+  const [pending,setPending]=useState(false); const [error,setError]=useState("");
+  function changeText(key:"food_name"|"portion"|"notes",value:string) { setDraft({ ...draft,[key]:value,ai_analysis:invalidateChangedAnalysis(draft.ai_analysis),nutrition:draft.nutrition?.source === "ai" ? null : draft.nutrition }); }
+  async function save() { if(pending)return;setPending(true);setError(""); try { const next={ ...draft,record_date:date,updated_at:new Date().toISOString() }; if (!await onSave(next)) {setError("记录未写入设备，输入已保留。请检查空间后再保存。");return;} if (files.length && !await onUpload(next,files)) {setError("餐食文字已保留，照片未全部保存。请选择照片重试，不会自动重复 AI 调用。");return;} onDone(); } catch(e){setError(e instanceof Error ? e.message : "保存失败，输入已保留。");}finally{setPending(false);} }
+  return <form onSubmit={(event) => { event.preventDefault(); void save(); }} className="space-y-4"><div className="grid gap-3 sm:grid-cols-2"><label className="text-sm font-medium">餐次<select value={draft.meal_type} onChange={(event) => setDraft({ ...draft,meal_type:event.target.value as MealType })} className="mt-1 w-full rounded-md border border-[#ded2be] px-3 py-3">{Object.entries(mealTypeLabels).map(([value,label]) => <option key={value} value={value}>{label}</option>)}</select></label><label className="text-sm font-medium">日期<input type="date" value={date} readOnly className="mt-1 w-full rounded-md border border-[#ded2be] bg-[#f5f5f2] px-3 py-3" /></label><label className="text-sm font-medium sm:col-span-2">食物名称<input required value={draft.food_name} onChange={(event) => changeText("food_name",event.target.value)} placeholder="例如：一个鸡蛋、250ml 纯牛奶" className="mt-1 w-full rounded-md border border-[#ded2be] px-3 py-3" /></label><label className="text-sm font-medium sm:col-span-2">分量<input value={draft.portion} onChange={(event) => changeText("portion",event.target.value)} placeholder="例如：鸡蛋 1 个；牛奶 250ml" className="mt-1 w-full rounded-md border border-[#ded2be] px-3 py-3" /></label><label className="text-sm font-medium sm:col-span-2">备注<textarea aria-label="备注" value={draft.notes} onChange={(event) => changeText("notes",event.target.value)} className="mt-1 min-h-20 w-full rounded-md border border-[#ded2be] px-3 py-3" /></label><label className="text-sm font-medium sm:col-span-2">餐食照片（可选）<input type="file" accept="image/*" capture="environment" multiple onChange={(event) => setFiles(Array.from(event.target.files || []))} className="mt-1 block w-full rounded-md border border-[#ded2be] px-3 py-3" /><span className="mt-1 block text-xs text-[#667165]">保存后压缩到最长边 1200px；不会自动调用 AI。</span></label></div><MealNutritionEditor nutrition={draft.nutrition} onSave={async (nutrition) => { setDraft({ ...draft,nutrition }); return true; }} />{error && <p role="alert" className="text-sm text-red-800">{error}</p>}<button type="submit" disabled={saving || pending} className="flex min-h-12 w-full items-center justify-center gap-2 rounded-md bg-[#4f8d5f] px-4 font-semibold text-white disabled:opacity-60"><Save className="h-4 w-4" />{pending ? "正在保存餐食与照片" : record ? "保存饮食修改" : "保存饮食记录"}</button></form>;
+}
+
+function QuickExerciseForm({ record,date,userId,onSave }: { record?:ExerciseRecord;date:string;userId:string;onSave:(record:ExerciseRecord)=>Promise<void> }) {
+  const [draft,setDraft] = useState<ExerciseRecord>(record || { id:uid("exercise"),user_id:userId,record_date:date,exercise_type:"步行",duration_min:30,distance_km:null,intensity:"中",calories_burned:null,feeling:"",has_discomfort:false,discomfort_detail:"",created_at:new Date().toISOString() });
+  return <form onSubmit={(event) => { event.preventDefault(); void onSave({ ...draft,record_date:date,updated_at:new Date().toISOString() }); }} className="space-y-4"><div className="grid gap-3 sm:grid-cols-2"><label className="text-sm font-medium">运动类型<select value={draft.exercise_type} onChange={(event) => setDraft({ ...draft,exercise_type:event.target.value as ExerciseType })} className="mt-1 w-full rounded-md border border-[#ded2be] px-3 py-3">{exerciseTypes.map((type) => <option key={type}>{type}</option>)}</select></label><label className="text-sm font-medium">时长 分钟<input required type="number" min="1" max="300" value={draft.duration_min} onChange={(event) => setDraft({ ...draft,duration_min:Number(event.target.value) })} className="mt-1 w-full rounded-md border border-[#ded2be] px-3 py-3" /></label><label className="text-sm font-medium">距离 km（可选）<input type="number" min="0" step="0.1" value={draft.distance_km ?? ""} onChange={(event) => setDraft({ ...draft,distance_km:event.target.value ? Number(event.target.value) : null })} className="mt-1 w-full rounded-md border border-[#ded2be] px-3 py-3" /></label><label className="text-sm font-medium">强度<select value={draft.intensity} onChange={(event) => setDraft({ ...draft,intensity:event.target.value as ExerciseRecord["intensity"] })} className="mt-1 w-full rounded-md border border-[#ded2be] px-3 py-3"><option>低</option><option>中</option><option>高</option></select></label><label className="text-sm font-medium">消耗热量（可选）<input type="number" min="0" value={draft.calories_burned ?? ""} onChange={(event) => setDraft({ ...draft,calories_burned:event.target.value ? Number(event.target.value) : null })} className="mt-1 w-full rounded-md border border-[#ded2be] px-3 py-3" /></label><label className="flex min-h-12 items-center gap-2 pt-6 text-sm font-medium"><input type="checkbox" checked={draft.has_discomfort} onChange={(event) => setDraft({ ...draft,has_discomfort:event.target.checked })} />有疼痛或不适</label><label className="text-sm font-medium sm:col-span-2">身体感受<textarea aria-label="身体感受" value={draft.feeling} onChange={(event) => setDraft({ ...draft,feeling:event.target.value })} className="mt-1 min-h-20 w-full rounded-md border border-[#ded2be] px-3 py-3" /></label><label className="text-sm font-medium sm:col-span-2">不适记录<textarea aria-label="不适记录" value={draft.discomfort_detail} onChange={(event) => setDraft({ ...draft,discomfort_detail:event.target.value })} className="mt-1 min-h-20 w-full rounded-md border border-[#ded2be] px-3 py-3" /></label></div>{draft.has_discomfort && <SafetyNotice text="保存后，后续训练建议会优先恢复；不会追加运动。" />}<button type="submit" className="flex min-h-12 w-full items-center justify-center gap-2 rounded-md bg-[#4f8d5f] px-4 font-semibold text-white"><Save className="h-4 w-4" />{record ? "保存运动修改" : "保存运动记录"}</button></form>;
+}
+
+function DailyHistoryPage({ data,date,onBack,onEditWeight,onEditMeal,onEditExercise,onEditCheckin,onPlan }: { data:AppData;date:string;onBack:()=>void;onEditWeight:(record:WeightRecord)=>void;onEditMeal:(record:MealRecord)=>void;onEditExercise:(record:ExerciseRecord)=>void;onEditCheckin:()=>void;onPlan:()=>void }) {
+  const snapshot=dailyCoachSnapshot(data,date); const weights=data.weights.filter((item) => item.record_date===date); const systemUpdates=(data.coach_events || []).filter((item) => item.record_date===date).slice().reverse();
+  const editClass="flex min-h-11 shrink-0 items-center gap-1 rounded-md border border-[#d7dfd6] px-3 text-sm font-semibold";
+  return <div className="space-y-4"><header className="flex flex-wrap items-center justify-between gap-3"><div><button onClick={onBack} className="text-sm font-semibold text-[#4f8d5f]">返回日历</button><h1 className="mt-1 text-2xl font-bold">{formatChineseDate(date)}完整详情</h1></div><button onClick={onPlan} className={editClass}>查看并调整当天计划</button></header>
+    <section className="border-y border-[#eadfcf] bg-white px-4 py-5 sm:rounded-lg sm:border"><h2 className="text-lg font-bold">体重及称重状态</h2><div className="mt-3 space-y-2">{weights.length ? weights.map((record) => <div key={record.id} className="flex items-center justify-between gap-3 border-l-4 border-[#9fc7a5] bg-[#f8fbf7] p-3"><div><strong>{record.weight_kg.toFixed(1)} kg</strong><p className="mt-1 text-sm text-[#667165]">{weightConditionLabel(record)}{record.note ? ` · ${record.note}` : ""}</p></div><button onClick={() => onEditWeight(record)} className={editClass}>编辑</button></div>) : <EmptyState text="这一天没有体重记录。" />}</div></section>
+    <NutritionOverview data={data} date={date} />
+    <section className="border-y border-[#eadfcf] bg-white px-4 py-5 sm:rounded-lg sm:border"><h2 className="text-lg font-bold">饮食与照片</h2><div className="mt-3 space-y-3">{snapshot.meals.length ? snapshot.meals.map((meal) => <article key={meal.id} className="border-l-4 border-[#e5b176] bg-[#fffaf3] p-3"><div className="flex items-start justify-between gap-3"><div><p className="text-xs font-bold text-[#8a5b2d]">{mealTypeLabels[meal.meal_type]}</p><h3 className="mt-1 font-bold">{meal.food_name}</h3><p className="mt-1 text-sm text-[#667165]">{meal.portion || "份量未填写"} · {meal.nutrition ? `${meal.nutrition.calories_min}–${meal.nutrition.calories_max} kcal · 蛋白质 ${meal.nutrition.protein_g}g · 脂肪 ${meal.nutrition.fat_g}g · 碳水 ${meal.nutrition.carbohydrate_g}g` : "营养未知，未按零计入"}</p>{meal.notes && <p className="mt-1 text-sm text-[#667165]">{meal.notes}</p>}</div><button onClick={() => onEditMeal(meal)} className={editClass}>编辑</button></div>{meal.images.length > 0 && <div className="mt-3 flex gap-2 overflow-x-auto">{meal.images.map((image) => image.signed_url ? <img key={image.id} src={image.signed_url} alt="餐食照片" className="h-20 w-20 shrink-0 rounded object-cover" /> : <span key={image.id} className="flex h-20 w-20 shrink-0 items-center justify-center rounded bg-[#eee8dd] text-xs">照片已保存</span>)}</div>}</article>) : <EmptyState text="这一天没有饮食记录。" />}</div></section>
+    <section className="border-y border-[#eadfcf] bg-white px-4 py-5 sm:rounded-lg sm:border"><h2 className="text-lg font-bold">运动实际执行</h2><div className="mt-3 space-y-2">{snapshot.exercises.length ? snapshot.exercises.map((record) => <div key={record.id} className="flex items-start justify-between gap-3 border-l-4 border-[#8fb6c9] bg-[#f4f9fb] p-3"><div><strong>{record.exercise_type} · {record.duration_min} 分钟</strong><p className="mt-1 text-sm text-[#667165]">{record.intensity}强度{record.distance_km ? ` · ${record.distance_km} km` : ""}{record.calories_burned ? ` · ${record.calories_burned} kcal` : ""}{record.has_discomfort ? " · 已记录不适" : ""}</p><p className="mt-1 text-sm text-[#667165]">感受：{record.feeling || "未填写"}</p>{record.discomfort_detail && <p className="mt-1 text-sm text-red-800">不适：{record.discomfort_detail}</p>}</div><button onClick={() => onEditExercise(record)} className={editClass}>编辑</button></div>) : <EmptyState text="这一天没有运动记录。" />}</div></section>
+    <section className="border-y border-[#eadfcf] bg-white px-4 py-5 sm:rounded-lg sm:border"><div className="flex items-center justify-between gap-3"><h2 className="text-lg font-bold">饮水、睡眠与身体状态</h2><button onClick={onEditCheckin} className={editClass}>编辑</button></div><div className="mt-3 grid grid-cols-2 gap-3 text-sm sm:grid-cols-4"><p>饮水<br/><strong>{snapshot.checkin ? `${snapshot.checkin.water_ml} ml` : "未记录"}</strong></p><p>睡眠<br/><strong>{snapshot.checkin?.sleep_hours ?? "未记录"}</strong></p><p>疲劳<br/><strong>{snapshot.checkin?.fatigue_level != null ? `${snapshot.checkin.fatigue_level}/10` : "未记录"}</strong></p><p>身体感受<br/><strong>{snapshot.checkin?.body_feeling || "未记录"}</strong></p></div></section>
+    <section className="border-y border-[#eadfcf] bg-white px-4 py-5 sm:rounded-lg sm:border"><h2 className="text-lg font-bold">计划与实际执行</h2><div className="mt-3 space-y-2">{snapshot.tasks.map((task) => <div key={task.id} className="flex items-center justify-between gap-3 border-b border-[#eee8dd] py-2 text-sm"><span className="min-w-0"><time className="mr-2 text-[#667165]">{task.time}</time>{task.title}<small className="mt-1 block text-[#667165]">计划：{task.amount}</small></span><strong className="shrink-0 whitespace-nowrap">{taskState(data,task)==="completed" ? "已完成" : taskState(data,task)==="skipped" ? "已跳过" : "待执行"}</strong></div>)}</div><p className="mt-3 text-sm text-[#667165]">实际运动共 {snapshot.exercises.reduce((sum,item) => sum+item.duration_min,0)} 分钟；已记录 {snapshot.meals.length} 餐。实际记录变化不会自动覆盖已确认任务。</p></section>
+    <section className="border-y border-[#eadfcf] bg-white px-4 py-5 sm:rounded-lg sm:border"><h2 className="text-lg font-bold">当天系统建议与更新记录</h2><div className="mt-3 space-y-2">{systemUpdates.length ? systemUpdates.map((update) => <p key={update.id} className="border-l-4 border-[#e5b176] bg-[#fffaf3] p-3 text-sm leading-6"><time className="mb-1 block text-xs text-[#667165]">{new Date(update.created_at).toLocaleString("zh-CN")}</time>{update.message}</p>) : <p className="text-sm text-[#667165]">旧记录未保存建议快照。历史计划不会因编辑记录被静默覆盖。</p>}</div></section>
+  </div>;
+}
+
+function WeightEntryCard({ data,selectedDate,record,onDate,onSave,onDelete }: { data: AppData;selectedDate:string;record?:WeightRecord;onDate:(date:string)=>void;onSave:(record:WeightRecord)=>Promise<void|boolean>;onDelete:(record:WeightRecord)=>Promise<void> }) {
   const [weight,setWeight] = useState(record ? record.weight_kg.toFixed(1) : "");
   const [draft,setDraft] = useState<WeightRecord>(record ?? {
     id:uid("weight"),user_id:data.profile.user_id,record_date:selectedDate,weight_kg:Number.NaN,note:"",
     high_salt:false,late_dinner:false,menstrual_period:data.profile.is_menstrual_period,bowel_movement:false,poor_sleep:false,hard_training_previous_day:false,
+    food_state:"unspecified",bowel_state:"unspecified",
   });
-  return <section className="rounded-lg border-2 border-[#9fc7a5] bg-white p-4 shadow-sm" aria-label="记录今日体重">
+  return <section className="bg-white" aria-label={record ? "编辑称重记录" : "新增称重记录"}>
           <div className="flex flex-wrap items-center justify-between gap-2">
           <h3 className="flex items-center gap-2 text-lg font-bold">
             <Scale className="h-5 w-5 text-[#5f8d6a]" />
-            记录今日体重
+            {record ? "编辑称重记录" : "新增称重记录"}
           </h3>
-          {!record && <span className="text-sm text-[#667165]">尚未记录，输入框保持空白</span>}
+          {!record && <span className="text-sm text-[#667165]">每天可以保存多次，不会覆盖同日其他记录</span>}
           </div>
           <div className="mt-4 grid gap-3 sm:grid-cols-2">
             <label className="text-sm font-medium">日期<input type="date" value={selectedDate} onChange={(event) => { if (event.target.value) onDate(event.target.value); }} className="mt-1 w-full rounded-md border border-[#ded2be] px-3 py-3" /></label>
@@ -1359,9 +1493,14 @@ function WeightEntryCard({ data,selectedDate,record,onDate,onSave,onDelete }: { 
                 placeholder="例如 55.8"
               />
             </label>
+            <label className="text-sm font-medium">称重时段<select value={draft.weighing_period || ""} onChange={(event) => setDraft({ ...draft,weighing_period:event.target.value ? event.target.value as WeightRecord["weighing_period"] : undefined })} className="mt-1 w-full rounded-md border border-[#ded2be] px-3 py-3"><option value="">未注明</option>{Object.entries(weighingPeriodLabels).map(([value,label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+            <label className="text-sm font-medium">具体时间（可选）<input type="time" value={draft.weighed_at || ""} onChange={(event) => setDraft({ ...draft,weighed_at:event.target.value || undefined })} className="mt-1 w-full rounded-md border border-[#ded2be] px-3 py-3" /></label>
+            <label className="text-sm font-medium">进食状态<select value={draft.food_state || "unspecified"} onChange={(event) => setDraft({ ...draft,food_state:event.target.value as WeightRecord["food_state"] })} className="mt-1 w-full rounded-md border border-[#ded2be] px-3 py-3">{Object.entries(foodStateLabels).map(([value,label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+            <label className="text-sm font-medium">排便状态<select value={draft.bowel_state || "unspecified"} onChange={(event) => setDraft({ ...draft,bowel_state:event.target.value as WeightRecord["bowel_state"],bowel_movement:event.target.value === "after" })} className="mt-1 w-full rounded-md border border-[#ded2be] px-3 py-3">{Object.entries(bowelStateLabels).map(([value,label]) => <option key={value} value={value}>{label}</option>)}</select></label>
             <label className="text-sm font-medium sm:col-span-2">
               备注
               <textarea
+                aria-label="备注"
                 value={draft.note}
                 onChange={(event) => setDraft({ ...draft, note: event.target.value })}
                 className="mt-1 min-h-20 w-full rounded-md border border-[#ded2be] px-3 py-3"
@@ -1374,7 +1513,6 @@ function WeightEntryCard({ data,selectedDate,record,onDate,onSave,onDelete }: { 
               ["high_salt", "前一天盐分偏高"],
               ["late_dinner", "晚餐较晚"],
               ["menstrual_period", "处于月经期"],
-              ["bowel_movement", "今日已排便"],
               ["poor_sleep", "睡眠不佳"],
               ["hard_training_previous_day", "前一天训练较累"],
             ].map(([key, label]) => (
@@ -1481,6 +1619,7 @@ function TodayPage({ selectedCheckin,onUpdateCheckin }: { data:AppData;selectedD
           <label className="text-sm font-medium md:col-span-3">
             身体感受
             <textarea
+              aria-label="身体感受"
               value={selectedCheckin.body_feeling}
               onChange={(event) =>
                 onUpdateCheckin({ body_feeling: event.target.value })
@@ -1978,7 +2117,7 @@ function ExercisePage({
   data: AppData;
   selectedDate: string;
   userId: string;
-  onSaveExercise: (record: ExerciseRecord) => Promise<void>;
+  onSaveExercise: (record: ExerciseRecord) => Promise<boolean>;
   onDeleteExercise: (record: ExerciseRecord) => Promise<void>;
 }) {
   const [draft, setDraft] = useState<ExerciseRecord>({
@@ -1997,6 +2136,7 @@ function ExercisePage({
   const exercises = data.exercises.filter(
     (exercise) => exercise.record_date === selectedDate,
   );
+  const [editing,setEditing]=useState<ExerciseRecord|null>(null);
 
   async function addExercise() {
     await onSaveExercise({ ...draft, created_at: new Date().toISOString() });
@@ -2152,6 +2292,10 @@ function ExercisePage({
                   </p>
                 </div>
                 <button
+                  onClick={() => setEditing(exercise)}
+                  className="flex min-h-11 items-center gap-2 rounded-md border border-[#c7dcca] px-3 py-2 text-sm font-semibold text-[#315a3c]"
+                >编辑</button>
+                <button
                   onClick={() => onDeleteExercise(exercise)}
                   className="flex min-h-10 items-center gap-2 rounded-md border border-[#e3d3bc] px-3 py-2 text-sm font-semibold text-[#7b5b3b]"
                 >
@@ -2166,6 +2310,7 @@ function ExercisePage({
           ))}
         </div>
       </section>
+      {editing && <RecordDialog title="编辑运动记录" onClose={() => setEditing(null)}><QuickExerciseForm record={editing} date={editing.record_date} userId={userId} onSave={async (record) => { if(await onSaveExercise(record)) setEditing(null); }} /></RecordDialog>}
     </div>
   );
 }
@@ -2184,11 +2329,12 @@ function TrendsPage({
   setRange: (range: 7 | 30) => void;
   selectedDate: string;
   onDate: (date:string) => void;
-  onSaveWeight: (record:WeightRecord) => Promise<void>;
+  onSaveWeight: (record:WeightRecord) => Promise<boolean>;
   onDeleteWeight: (record:WeightRecord) => Promise<void>;
 }) {
   const [showWeight,setShowWeight] = useState(false);
-  const allTrend = movingAverage(data.weights, 7);
+  const primary = primaryWeightTrend(data.weights,7);
+  const allTrend = primary.trend;
   const rangeStart = addDays(todayString(), 1 - range);
   const trend = allTrend.filter((item) => item.record_date >= rangeStart && item.record_date <= todayString()).map((item) => ({
     date: item.record_date.slice(5),
@@ -2222,13 +2368,13 @@ function TrendsPage({
   return (
     <div className="space-y-4">
       <div className="flex justify-end"><button onClick={() => setShowWeight((value) => !value)} className="flex min-h-11 items-center gap-2 rounded-md bg-[#4f8d5f] px-4 py-2 font-semibold text-white"><Scale className="h-4 w-4" />记录体重</button></div>
-      {showWeight && <WeightEntryCard key={`trend-weight-${selectedDate}-${data.weights.find((item) => item.record_date===selectedDate)?.id || "new"}`} data={data} selectedDate={selectedDate} record={data.weights.find((item) => item.record_date===selectedDate)} onDate={onDate} onSave={onSaveWeight} onDelete={onDeleteWeight} />}
+      {showWeight && <WeightEntryCard key={`trend-weight-${selectedDate}-new`} data={data} selectedDate={selectedDate} onDate={onDate} onSave={onSaveWeight} onDelete={onDeleteWeight} />}
       <section className="rounded-lg border border-[#eadfcf] bg-white p-4 shadow-sm">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h3 className="text-lg font-bold">体重趋势</h3>
             <p className="mt-1 text-sm text-[#667165]">
-              单日体重是原始记录，趋势体重是 7 日移动平均。突然上涨不等于长脂肪。
+              当前主趋势使用{primary.condition}记录及其 7 日移动平均，不与饭后等其他条件混算。突然上涨不等于长脂肪。
             </p>
           </div>
           <div className="grid grid-cols-2 rounded-md bg-[#f6efe2] p-1">
@@ -2323,7 +2469,7 @@ function CalendarPage({
     cell.setDate(firstCell.getDate() + index);
     return formatDate(cell);
   });
-  const trend = movingAverage(data.weights, 7);
+  const trend = primaryWeightTrend(data.weights,7).trend;
 
   function statusFor(date: string) {
     const checkin = getRecordForDate(data.checkins, date);
@@ -2358,7 +2504,7 @@ function CalendarPage({
               key={date}
               onClick={() => {
                 setSelectedDate(date);
-                setActiveTab("today");
+                setActiveTab("history");
               }}
               className={classNames(
                 "relative flex aspect-square min-h-12 flex-col items-center justify-center rounded-md border text-sm font-semibold transition",
@@ -2486,7 +2632,7 @@ function SettingsPage({
   getCloudUsage,
 }: {
   data: AppData;
-  onSaveProfile: (profile: Profile) => Promise<void>;
+  onSaveProfile: (profile: Profile) => Promise<boolean|void>;
   isDemo: boolean;
   onExportBackup: () => Promise<void>;
   onRestoreBackup: (backup: PreparedBackup, recordsOnly: boolean) => Promise<boolean>;
@@ -2499,7 +2645,7 @@ function SettingsPage({
   const [draft, setDraft] = useState(data.profile);
   return (
     <div className="space-y-5">
-    <section className="rounded-lg border border-[#eadfcf] bg-white p-4 shadow-sm">
+    <section hidden={!data.profile.profile_confirmed_at} className="rounded-lg border border-[#eadfcf] bg-white p-4 shadow-sm">
       <h3 className="text-lg font-bold">个人设置</h3>
       <PlanningPreferencesEditor value={draft.planning || planningPreferencesSchema.parse({})} onChange={(planning) => setDraft({ ...draft,planning })} />
       <div className="mt-4 grid gap-3 md:grid-cols-2">
@@ -2689,7 +2835,7 @@ function SettingsPage({
 
 
 function calculateWeeklyChange(weights: WeightRecord[]) {
-  const trend = movingAverage(weights, 7);
+  const trend = primaryWeightTrend(weights,7).trend;
   const latest = trend.at(-1);
   if (!latest) return "0.0";
   const previousDate = addDays(latest.record_date, -7);

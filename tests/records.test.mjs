@@ -56,7 +56,7 @@ test("backup round trips records and embedded photos without signed cloud URLs",
   assert.equal(JSON.stringify(backup).includes("token=temporary"), false);
 });
 
-test("restore merges records by date and ID, keeps photos and is idempotent", () => {
+test("restore keeps multiple same-day weights by ID, keeps photos and is idempotent", () => {
   const current = buildDefaultData("local-user");
   current.weights = [weight("2026-10-10", 56), weight("2026-10-12", 55, "old-id")];
   const incoming = buildDefaultData("another-user");
@@ -75,8 +75,8 @@ test("restore merges records by date and ID, keeps photos and is idempotent", ()
     body_feeling: "", bowel_movement: false, menstrual_period: false, completion_score: 100,
   }];
   const restored = mergeBackupData(current, parseDataBackup(createDataBackup(incoming)));
-  assert.equal(restored.weights.length, 2);
-  assert.equal(restored.weights[1].weight_kg, 54);
+  assert.equal(restored.weights.length, 3);
+  assert.deepEqual(restored.weights.filter((item) => item.record_date === "2026-10-12").map((item) => item.weight_kg), [55,54]);
   assert.equal(restored.checkins[0].completion_score, 11);
   assert.equal(restored.profile.id, current.profile.id);
   assert.equal(restored.profile.user_id, "local-user");
