@@ -56,7 +56,8 @@ try {
   await until(async()=>(await saved()).task_updates.some(item=>item.id.endsWith(":sleep") && item.scheduled_time==="21:45"));
   assert.equal(await page.locator(`.plan-task[data-task-id="${todayString()}:sleep"]`).count(),0);
   const dinner=page.locator(`.plan-task[data-task-id="${todayString()}:dinner"]`);const amount=await dinner.locator(".task-amount").innerText();
-  await dinner.getByRole("button",{name:/替换/}).click();await until(async()=>(await saved()).task_updates.some(item=>item.id.endsWith(":dinner") && item.meal_choice===1));assert.notEqual(await dinner.locator(".task-amount").innerText(),amount);
+  const beforeSwap=await saved();const oldChoice=beforeSwap.task_updates.find(item=>item.id===`${todayString()}:dinner`)?.meal_choice || 0;const options=beforeSwap.plans.flatMap(plan=>plan.days.flatMap(day=>day.tasks)).find(task=>task.id===`${todayString()}:dinner`).meals.length;
+  await dinner.getByRole("button",{name:/替换/}).click();await until(async()=>(await saved()).task_updates.some(item=>item.id.endsWith(":dinner") && item.meal_choice===(oldChoice+1)%options && item.source==="user"));assert.notEqual(await dinner.locator(".task-amount").innerText(),amount);
   await page.reload();await page.getByRole("heading",{name:"今日减肥计划",exact:true}).waitFor();assert.equal((await saved()).meals.length,1);
   results.push("Meal completion explicitly confirms approximate intake; skip, cross-day reschedule and replacement survive refresh.");
 

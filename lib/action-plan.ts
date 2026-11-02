@@ -150,7 +150,7 @@ export function taskMealNutrition(meal: PlanMeal): MealNutrition { return { calo
 export function nextActionAdvice(data: AppData,date: string) {
   const meals = data.meals.filter((record) => record.record_date === date);
   const total = dailyNutrition(meals); const targets = dailyNutritionTargets(data,date).targets;
-  const candidates = tasksForDate(data,date).filter((task) => task.kind === "meal" && taskState(data,task)!=="completed" && taskState(data,task)!=="skipped");
+  const candidates = tasksForDate(data,date).filter((task) => task.kind === "meal" && taskState(data,task)!=="completed" && taskState(data,task)!=="skipped" && !meals.some((meal) => meal.meal_type===task.meal_type));
   const now = new Date(); const time = date===todayString() ? `${String(now.getHours()).padStart(2,"0")}:${String(now.getMinutes()).padStart(2,"0")}` : "00:00";
   const next = candidates.find((task) => task.time>=time) || candidates.at(-1);
   const customAmount = data.task_updates?.find((update) => update.id===next?.id)?.amount;
@@ -208,11 +208,12 @@ export function adjustPlanAfterActuals(data: AppData,date: string,cause: "weight
       patch = { recovery: true,duration_min: Math.min(task.duration_min || 10,10),note: "已根据近期睡眠、疲劳、身体状态和训练记录改为恢复；不会补练。" };
       adjusted += 1;
     } else if (cause === "meal" && task.kind === "meal" && task.date === date) {
-      if (intake.unknown) patch = { note: `已有 ${intake.unknown} 餐营养待确认；先补充分量，下一餐保持正常主食、蛋白质和蔬菜。` };
+      if (data.meals.some((meal) => meal.record_date===date && meal.meal_type===task.meal_type)) continue;
+      if (intake.unknown) patch = { meal_choice:0,note: `已有 ${intake.unknown} 餐营养待确认；先补充分量，下一餐保持正常主食、蛋白质和蔬菜。` };
       else if (targets && intake.recorded > 0 && intake.protein_g < targets.protein_g*0.6) {
         const ranked = task.meals.map((meal,index) => ({ index,protein: meal.protein_g })).sort((a,b) => b.protein-a.protein);
         patch = { meal_choice: ranked[0]?.index || 0,note: "已根据实际饮食更新：下一餐优先合理蛋白质来源，同时保留正常主食和蔬菜。" };
-      } else patch = { note: "已根据实际饮食更新：维持正常份量，不跳餐，也不追加运动抵消。" };
+      } else patch = { meal_choice:0,note: "已根据实际饮食更新：维持正常份量，不跳餐，也不追加运动抵消。" };
     } else if (cause === "weight" && task.date > date && adjusted < 3) {
       const trendText = weeklyTrend === null ? "记录仍少，暂不依据单日波动改变强度" : `7 日趋势约 ${weeklyTrend > 0 ? "+" : ""}${weeklyTrend} kg`;
       patch = { note: `已结合最新体重与${trendText}复核；保持温和安排，不因单日体重大幅削减热量或增加运动。` };

@@ -7,8 +7,10 @@ import { fileURLToPath } from "node:url";
 const root = fileURLToPath(new URL("../",import.meta.url));
 const coach = process.argv.includes("--coach");
 const aiTest = process.argv.includes("--ai-test");
+const actualMeals=process.argv.includes("--actual-meals");
+if(actualMeals && (!coach || aiTest)) throw new Error("Actual meal regression preview requires --coach and keeps paid AI disabled.");
 if (aiTest && !coach) throw new Error("Local AI testing is only available with --coach.");
-const directory = coach ? ".next-coach" : ".next-v2";
+const directory = actualMeals ? ".next-actual-meals" : coach ? ".next-coach" : ".next-v2";
 const dist = resolve(root,directory);
 const marker = resolve(dist,"isolated-preview.json");
 const env = { ...process.env,LOCAL_PREVIEW_DIR: directory,NODE_ENV: "production",NEXT_PUBLIC_DATA_BACKEND: "local",NEXT_PUBLIC_SUPABASE_URL: "",NEXT_PUBLIC_SUPABASE_ANON_KEY: "",
@@ -27,7 +29,7 @@ if (!process.argv.includes("--serve-built")) {
   if (!metadata.isolated) throw new Error("Build the isolated preview with npm run build:v2 first.");
 }
 if (!process.argv.includes("--build-only")) {
-  let port = Number(process.env.PREVIEW_PORT) || (coach ? 3005 : 3004);
+  let port = Number(process.env.PREVIEW_PORT) || (actualMeals ? 3009 : coach ? 3005 : 3004);
   async function available(value) {
     return new Promise((resolve) => {
       const test = createServer(); test.once("error",() => resolve(false));

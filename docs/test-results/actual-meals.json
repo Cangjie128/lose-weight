@@ -1,0 +1,12 @@
+{
+  "results": [
+    "Empty actual breakfast/lunch/dinner/snack groups offer direct add actions; recommendations and another date never become today's intake; the current origin and port isolation are visible.",
+    "QuickMealForm commits the meal and real JPEG to IndexedDB, closes to home, and the actual record/photo appears immediately without navigation; unknown nutrition stays pending.",
+    "Editing keeps the original meal ID and photo, updates calories/macros immediately, and the exact same actual meal content appears in history and after reload.",
+    "Canceling deletion preserves the record; confirmed deletion updates home, history, totals and remaining plan immediately and survives reload, while another day's record and original photo bytes are retained."
+  ],
+  "page_errors": [],
+  "external_requests": [],
+  "paid_requests": [],
+  "browser": "156.0.8078.79"
+}

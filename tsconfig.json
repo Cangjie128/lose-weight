@@ -39,7 +39,9 @@
     ".next-v2/types/**/*.ts",
     ".next-v2/dev/types/**/*.ts",
     ".next-coach/types/**/*.ts",
-    ".next-coach/dev/types/**/*.ts"
+    ".next-coach/dev/types/**/*.ts",
+    ".next-actual-meals/types/**/*.ts",
+    ".next-actual-meals/dev/types/**/*.ts"
   ],
   "exclude": [
     "node_modules"

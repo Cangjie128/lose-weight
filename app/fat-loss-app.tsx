@@ -81,6 +81,7 @@ import {
 } from "@/lib/fat-loss";
 import DataStoragePanel from "./data-storage-panel";
 import ActionPlan from "./action-plan";
+import ActualMeals,{ LocalDataNotice } from "./actual-meals";
 import PlanningPreferencesEditor from "./planning-preferences-editor";
 import { adjustPlanAfterActuals,generateWeekPlan,mondayOf,selectedPlanMeal,taskMealNutrition,taskState } from "@/lib/action-plan";
 import { planningPreferencesSchema,taskUpdateSchema,type PlanTask,type TaskUpdate } from "@/lib/plan-types";
@@ -122,7 +123,7 @@ type RecordDialogState =
   | { kind: "menu" }
   | { kind: "profile" }
   | { kind: "weight"; record?: WeightRecord }
-  | { kind: "meal"; record?: MealRecord }
+  | { kind: "meal"; record?: MealRecord; mealType?:MealType }
   | { kind: "exercise"; record?: ExerciseRecord }
   | { kind: "checkin" }
   | null;
@@ -749,12 +750,15 @@ export default function FatLossApp() {
       const result = await supabase.from("meal_records").delete().eq("id", record.id).eq("user_id", userId);
       if (result.error) { showToast({ type: "error", message: "云端删除失败，原有记录已保留。" }); return; }
     }
-    await updateLocal((current) => ({
+    await updateLocal((current) => adjustPlanAfterActuals({
       ...current,
       meals: current.meals.filter((item) => item.id !== record.id),
-    }));
+    },record.record_date,"meal"));
+    if (storageUnsaved.current) return;
     if (record.meal_type !== "snack" && !dataRef.current?.meals.some((meal) => meal.record_date === selectedDate && meal.meal_type === record.meal_type)) await setTask(record.meal_type, false);
-    showToast({ type: "success", message: "饮食记录已删除。" });
+    if (storageUnsaved.current) return;
+    if (recordDialog?.kind==="meal" && recordDialog.record?.id===record.id) setRecordDialog(null);
+    showToast({ type: "success", message: "饮食记录已删除，已根据剩余实际饮食更新计划。照片文件仍保留。" });
   }
 
   async function uploadMealImages(record: MealRecord, files: FileList | File[] | null) {
@@ -1028,6 +1032,7 @@ export default function FatLossApp() {
             onRefresh={() => { if (supabase && user) void loadRemoteData(supabase, user.id); }}
           />
 
+          {isDemo && <LocalDataNotice />}
           {toast && <ToastMessage toast={toast} />}
 
           {storageIssue && (
@@ -1051,7 +1056,7 @@ export default function FatLossApp() {
 
           {activeTab === "today" && (
             <div className="space-y-5">
-            <DailyCoachHome data={data} date={selectedDate} onRecord={(kind) => openRecordDialog({ kind })} onSettings={() => data.profile.profile_confirmed_at ? setActiveTab("settings") : openRecordDialog({ kind:"profile" })} onHistory={() => setActiveTab("history")} />
+            <DailyCoachHome data={data} date={selectedDate} onRecord={(kind) => openRecordDialog({ kind })} onEditMeal={(record) => openRecordDialog({ kind:"meal",record })} onAddMeal={(mealType) => openRecordDialog({ kind:"meal",mealType })} onSettings={() => data.profile.profile_confirmed_at ? setActiveTab("settings") : openRecordDialog({ kind:"profile" })} onHistory={() => setActiveTab("history")} />
             {isProfileReady(data) && <ActionPlan data={data} date={selectedDate} busy={backupBusy || saving} onDate={setSelectedDate} onGenerate={generatePlan} onUpdate={updatePlanTask} onComplete={completePlanTask} onPhoto={photographPlanMeal} onRecords={() => openRecordDialog({ kind:"meal" })} onSettings={() => setActiveTab("settings")} />}
             <details className="plan-records"><summary>饮水与身体状态 <ChevronDown className="h-4 w-4" /></summary>
             <TodayPage
@@ -1114,7 +1119,7 @@ export default function FatLossApp() {
           )}
 
           {activeTab === "history" && (
-            <DailyHistoryPage data={data} date={selectedDate} onBack={() => setActiveTab("calendar")} onEditWeight={(record) => openRecordDialog({ kind:"weight",record })} onEditMeal={(record) => openRecordDialog({ kind:"meal",record })} onEditExercise={(record) => openRecordDialog({ kind:"exercise",record })} onEditCheckin={() => openRecordDialog({ kind:"checkin" })} onPlan={() => setActiveTab("today")} />
+            <DailyHistoryPage data={data} date={selectedDate} onBack={() => setActiveTab("calendar")} onEditWeight={(record) => openRecordDialog({ kind:"weight",record })} onEditMeal={(record) => openRecordDialog({ kind:"meal",record })} onAddMeal={(mealType) => openRecordDialog({ kind:"meal",mealType })} onEditExercise={(record) => openRecordDialog({ kind:"exercise",record })} onEditCheckin={() => openRecordDialog({ kind:"checkin" })} onPlan={() => setActiveTab("today")} />
           )}
 
           {activeTab === "coach" && (
@@ -1186,7 +1191,7 @@ export default function FatLossApp() {
         }} />}
         {recordDialog.kind === "menu" && <RecordMenu onChoose={(kind) => openRecordDialog({ kind })} />}
         {recordDialog.kind === "weight" && <WeightEntryCard key={recordDialog.record?.id || `new-${selectedDate}`} data={data} selectedDate={selectedDate} record={recordDialog.record} onDate={setSelectedDate} onSave={async (record) => { if (await saveWeight(record)) { setRecordDialog(null); if (!recordDialog.record) setActiveTab("today"); } }} onDelete={deleteWeight} />}
-        {recordDialog.kind === "meal" && (recordDialog.record ? <MealCard meal={data.meals.find((meal) => meal.id===recordDialog.record?.id) || recordDialog.record} onSaveMeal={saveMeal} onDeleteMeal={deleteMeal} onUploadImages={async (meal,files) => { await uploadMealImages(meal,files); }} onDeleteImage={deleteMealImage} onAnalyzeMeal={analyzeMeal} aiPending={aiPendingId===recordDialog.record.id} saving={saving} /> : <QuickMealForm key={`new-${selectedDate}`} date={selectedDate} userId={userId} saving={saving} onSave={saveMeal} onUpload={uploadMealImages} onDone={() => { setRecordDialog(null); setActiveTab("today"); }} />)}
+        {recordDialog.kind === "meal" && (recordDialog.record ? <MealCard meal={data.meals.find((meal) => meal.id===recordDialog.record?.id) || recordDialog.record} onSaveMeal={saveMeal} onDeleteMeal={deleteMeal} onUploadImages={async (meal,files) => { await uploadMealImages(meal,files); }} onDeleteImage={deleteMealImage} onAnalyzeMeal={analyzeMeal} aiPending={aiPendingId===recordDialog.record.id} saving={saving} /> : <QuickMealForm key={`new-${selectedDate}-${recordDialog.mealType || "breakfast"}`} mealType={recordDialog.mealType} date={selectedDate} userId={userId} saving={saving} onSave={saveMeal} onUpload={uploadMealImages} onDone={() => { setRecordDialog(null); setActiveTab("today"); }} />)}
         {recordDialog.kind === "exercise" && <QuickExerciseForm key={recordDialog.record?.id || `new-${selectedDate}`} record={recordDialog.record} date={selectedDate} userId={userId} onSave={async (record) => { if (await saveExercise(record)) { setRecordDialog(null); if (!recordDialog.record) setActiveTab("today"); } }} />}
         {recordDialog.kind === "exercise" && recordDialog.record && <button className="mt-5 flex min-h-11 items-center gap-2 rounded-md border border-red-200 px-4 text-sm font-semibold text-red-800" onClick={() => void deleteExercise(recordDialog.record!)}><Trash2 size={16}/>删除这条运动记录</button>}
         {recordDialog.kind === "checkin" && <TodayPage data={data} selectedDate={selectedDate} selectedCheckin={selectedCheckin} onSetTask={setTask} onUpdateCheckin={updateCheckin} />}
@@ -1386,9 +1391,10 @@ function MetricCard({
   );
 }
 
-function DailyCoachHome({ data,date,onRecord,onSettings,onHistory }: { data:AppData;date:string;onRecord:(kind:"weight"|"meal"|"exercise")=>void;onSettings:()=>void;onHistory:()=>void }) {
+function DailyCoachHome({ data,date,onRecord,onEditMeal,onAddMeal,onSettings,onHistory }: { data:AppData;date:string;onRecord:(kind:"weight"|"meal"|"exercise")=>void;onEditMeal:(meal:MealRecord)=>void;onAddMeal:(type:MealType)=>void;onSettings:()=>void;onHistory:()=>void }) {
   const snapshot = dailyCoachSnapshot(data,date);
   const movement = snapshot.tasks.find((task) => task.kind === "exercise" || task.id.endsWith(":movement"));
+  const actualMeals=<ActualMeals title="今日实际饮食" meals={snapshot.meals} onEdit={onEditMeal} onAdd={onAddMeal} />;
   return <div className="space-y-4">
     <section className="border-y border-[#d9e5db] bg-white px-4 py-5 shadow-sm sm:rounded-lg sm:border">
       <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-xs font-bold text-[#4f8d5f]">每日个性化减肥教练</p><h1 className="mt-1 text-xl font-bold">{formatChineseDate(date)}</h1><p className="mt-2 text-sm text-[#667165]">本地计算提醒 · 不自动调用 AI</p></div><button onClick={onHistory} className="flex min-h-11 items-center gap-2 rounded-md border border-[#d7dfd6] px-3 text-sm font-semibold">查看当天详情<ChevronRight className="h-4 w-4" /></button></div>
@@ -1396,14 +1402,15 @@ function DailyCoachHome({ data,date,onRecord,onSettings,onHistory }: { data:AppD
         {([["weight","记录体重",Scale],["meal","记录饮食",Utensils],["exercise","记录运动",Dumbbell]] as const).map(([kind,label,Icon]) => <button key={kind} onClick={() => onRecord(kind)} className="flex min-h-16 flex-col items-center justify-center gap-1 rounded-md border border-[#dce5df] bg-[#f8fbf7] px-2 text-sm font-bold text-[#315a3c]"><Icon className="h-5 w-5" />{label}</button>)}
       </div>
     </section>
-    {!snapshot.ready ? <section className="border-l-4 border-[#e48945] bg-[#fff7ed] px-4 py-4"><h2 className="font-bold">先确认你的真实资料</h2><p className="mt-2 text-sm leading-6 text-[#72583d]">请在“我的”中确认年龄、身高、活动水平和目标，再记录一次真实体重。完成前不会使用示例体重或目标生成个人热量计划。</p><button onClick={onSettings} className="mt-3 min-h-11 rounded-md bg-[#4f8d5f] px-4 font-semibold text-white">完善个人资料</button></section> : <>
+    {!snapshot.ready ? <><section className="border-l-4 border-[#e48945] bg-[#fff7ed] px-4 py-4"><h2 className="font-bold">先确认你的真实资料</h2><p className="mt-2 text-sm leading-6 text-[#72583d]">请在“我的”中确认年龄、身高、活动水平和目标，再记录一次真实体重。完成前不会使用示例体重或目标生成个人热量计划。</p><button onClick={onSettings} className="mt-3 min-h-11 rounded-md bg-[#4f8d5f] px-4 font-semibold text-white">完善个人资料</button></section>{actualMeals}</> : <>
       <section className="border-y border-[#eadfcf] bg-white px-4 py-5 sm:rounded-lg sm:border">
         <div className="flex flex-wrap items-end justify-between gap-2"><div><p className="text-xs font-bold text-[#4f8d5f]">今日营养目标</p><h2 className="mt-1 text-xl font-bold">{snapshot.targets ? `推荐总摄入 ${snapshot.targets.calories} kcal` : "暂不自动生成减脂热量"}</h2></div><span className="text-sm text-[#667165]">{snapshot.weightCondition} · 7日变化{snapshot.sevenDayChange === null ? "记录不足" : `${snapshot.sevenDayChange >= 0 ? "+" : ""}${snapshot.sevenDayChange} kg`}</span></div>
         <details className="mt-3 text-sm text-[#667165]"><summary className="min-h-11 cursor-pointer py-2 font-medium">查看热量计算依据</summary><p className="leading-6">{snapshot.targetExplanation}</p></details>
         <div className="mt-4"><NutritionOverview data={data} date={date} compact /><p className="mt-4 border-t border-[#e1e8df] pt-3 text-sm font-medium">今日运动：{movement?.kind === "exercise" ? `${movement.duration_min} 分钟` : "恢复 / 休息"} · 已记录 {snapshot.exercises.reduce((sum,item) => sum+item.duration_min,0)} 分钟</p></div>
       </section>
+      {actualMeals}
     <section className="border-y border-[#eadfcf] bg-white px-4 py-5 sm:rounded-lg sm:border"><div className="flex items-center justify-between"><h2 className="text-lg font-bold">教练即时反馈</h2><span className="text-xs font-bold text-[#4f8d5f]">本地计算</span></div><div className="mt-3 space-y-2">{snapshot.reminders.map((reminder) => <p key={reminder} className="border-l-4 border-[#e5b176] bg-[#fffaf3] px-3 py-2 text-sm leading-6">{reminder}</p>)}</div><p className="mt-4 text-sm font-semibold">今日任务 {snapshot.completed}/{snapshot.tasks.length} 已完成</p><progress value={snapshot.completed} max={snapshot.tasks.length || 1} className="mt-2 h-2 w-full accent-[#4f8d5f]" /></section>
-      <section className="border-y border-[#eadfcf] bg-white px-4 py-5 sm:rounded-lg sm:border"><h2 className="text-lg font-bold">三餐安排</h2><div className="mt-3 grid gap-3 md:grid-cols-3">{snapshot.mealTasks.filter(({ task }) => task.meal_type !== "snack").map(({ task,meal }) => <article key={task.id} className="border-l-4 border-[#e5b176] bg-[#fffaf3] p-3"><p className="text-xs font-bold text-[#8a5b2d]">{task.time} · {task.title}</p><h3 className="mt-2 font-bold">{meal?.title || "按偏好选择正常一餐"}</h3><p className="mt-1 text-sm leading-6 text-[#667165]">{meal?.portion || task.amount}</p></article>)}</div><div className="mt-4 border-t border-[#eee3d3] pt-4"><h3 className="font-bold">下一餐建议</h3><p className="mt-1 text-sm leading-6 text-[#667165]">{snapshot.nextMeal}</p></div></section>
+      <section className="border-y border-[#eadfcf] bg-white px-4 py-5 sm:rounded-lg sm:border"><h2 className="text-lg font-bold">今日推荐饮食</h2><p className="mt-2 text-sm text-[#8a5b2d]">以下是推荐菜单，不代表已经吃过；营养累计以今日实际饮食为准。</p><div className="mt-3 grid gap-3 md:grid-cols-3">{snapshot.mealTasks.filter(({ task }) => task.meal_type !== "snack").map(({ task,meal }) => <article key={task.id} className="border-l-4 border-[#e5b176] bg-[#fffaf3] p-3"><p className="text-xs font-bold text-[#8a5b2d]">{task.time} · {task.title}</p><h3 className="mt-2 font-bold">{meal?.title || "按偏好选择正常一餐"}</h3><p className="mt-1 text-sm leading-6 text-[#667165]">{meal?.portion || task.amount}</p></article>)}</div><div className="mt-4 border-t border-[#eee3d3] pt-4"><h3 className="font-bold">下一餐建议</h3><p className="mt-1 text-sm leading-6 text-[#667165]">{snapshot.nextMeal}</p><p className="mt-1 text-sm leading-6 text-[#667165]">{snapshot.nextMealReason}</p></div></section>
       <section className="border-y border-[#dbe6dc] bg-white px-4 py-5 sm:rounded-lg sm:border"><div className="flex items-center justify-between gap-3"><h2 className="text-lg font-bold">今日运动计划</h2><span className="rounded bg-[#eef6ea] px-2 py-1 text-xs font-bold text-[#477b55]">{snapshot.exercise.intensity}</span></div><p className="mt-2 font-semibold">{movement?.title || snapshot.exercise.activity} · {movement ? `${movement.duration_min} 分钟` : snapshot.exercise.duration}</p><p className="mt-2 text-sm leading-6 text-[#667165]">{snapshot.exercise.reason}</p>{movement && <ol className="mt-3 space-y-2 border-l-2 border-[#b8cfb6] pl-4 text-sm leading-6">{movement.steps.map((step,index) => <li key={index}>{index+1}. {step}</li>)}</ol>}</section>
     </>}
   </div>;
@@ -1435,8 +1442,8 @@ function RecordMenu({ onChoose }: { onChoose:(kind:"weight"|"meal"|"exercise")=>
   return <div className="grid gap-3 sm:grid-cols-3">{([["weight","体重","记录时段和状态",Scale],["meal","饮食","食物、份量和照片",Utensils],["exercise","运动","项目、强度和感受",Dumbbell]] as const).map(([kind,title,note,Icon]) => <button key={kind} onClick={() => onChoose(kind)} className="flex min-h-24 items-center gap-3 rounded-md border border-[#dce5df] bg-[#f8fbf7] p-4 text-left"><Icon className="h-6 w-6 text-[#4f8d5f]" /><span><strong className="block">记录{title}</strong><small className="mt-1 block text-[#667165]">{note}</small></span></button>)}</div>;
 }
 
-function QuickMealForm({ record,date,userId,saving,onSave,onUpload,onDone }: { record?:MealRecord;date:string;userId:string;saving:boolean;onSave:(record:MealRecord)=>Promise<boolean>;onUpload:(record:MealRecord,files:File[])=>Promise<boolean>;onDone:()=>void }) {
-  const [draft,setDraft] = useState<MealRecord>(record || { id:uid("meal"),user_id:userId,record_date:date,meal_type:"breakfast",food_name:"",portion:"",notes:"",nutrition:null,ai_analysis:null,images:[],created_at:new Date().toISOString() });
+function QuickMealForm({ record,mealType="breakfast",date,userId,saving,onSave,onUpload,onDone }: { record?:MealRecord;mealType?:MealType;date:string;userId:string;saving:boolean;onSave:(record:MealRecord)=>Promise<boolean>;onUpload:(record:MealRecord,files:File[])=>Promise<boolean>;onDone:()=>void }) {
+  const [draft,setDraft] = useState<MealRecord>(record || { id:uid("meal"),user_id:userId,record_date:date,meal_type:mealType,food_name:"",portion:"",notes:"",nutrition:null,ai_analysis:null,images:[],created_at:new Date().toISOString() });
   const [files,setFiles] = useState<File[]>([]);
   const [pending,setPending]=useState(false); const [error,setError]=useState("");
   function changeText(key:"food_name"|"portion"|"notes",value:string) { setDraft({ ...draft,[key]:value,ai_analysis:invalidateChangedAnalysis(draft.ai_analysis),nutrition:draft.nutrition?.source === "ai" ? null : draft.nutrition }); }
@@ -1449,13 +1456,13 @@ function QuickExerciseForm({ record,date,userId,onSave }: { record?:ExerciseReco
   return <form onSubmit={(event) => { event.preventDefault(); void onSave({ ...draft,record_date:date,updated_at:new Date().toISOString() }); }} className="space-y-4"><div className="grid gap-3 sm:grid-cols-2"><label className="text-sm font-medium">运动类型<select value={draft.exercise_type} onChange={(event) => setDraft({ ...draft,exercise_type:event.target.value as ExerciseType })} className="mt-1 w-full rounded-md border border-[#ded2be] px-3 py-3">{exerciseTypes.map((type) => <option key={type}>{type}</option>)}</select></label><label className="text-sm font-medium">时长 分钟<input required type="number" min="1" max="300" value={draft.duration_min} onChange={(event) => setDraft({ ...draft,duration_min:Number(event.target.value) })} className="mt-1 w-full rounded-md border border-[#ded2be] px-3 py-3" /></label><label className="text-sm font-medium">距离 km（可选）<input type="number" min="0" step="0.1" value={draft.distance_km ?? ""} onChange={(event) => setDraft({ ...draft,distance_km:event.target.value ? Number(event.target.value) : null })} className="mt-1 w-full rounded-md border border-[#ded2be] px-3 py-3" /></label><label className="text-sm font-medium">强度<select value={draft.intensity} onChange={(event) => setDraft({ ...draft,intensity:event.target.value as ExerciseRecord["intensity"] })} className="mt-1 w-full rounded-md border border-[#ded2be] px-3 py-3"><option>低</option><option>中</option><option>高</option></select></label><label className="text-sm font-medium">消耗热量（可选）<input type="number" min="0" value={draft.calories_burned ?? ""} onChange={(event) => setDraft({ ...draft,calories_burned:event.target.value ? Number(event.target.value) : null })} className="mt-1 w-full rounded-md border border-[#ded2be] px-3 py-3" /></label><label className="flex min-h-12 items-center gap-2 pt-6 text-sm font-medium"><input type="checkbox" checked={draft.has_discomfort} onChange={(event) => setDraft({ ...draft,has_discomfort:event.target.checked })} />有疼痛或不适</label><label className="text-sm font-medium sm:col-span-2">身体感受<textarea aria-label="身体感受" value={draft.feeling} onChange={(event) => setDraft({ ...draft,feeling:event.target.value })} className="mt-1 min-h-20 w-full rounded-md border border-[#ded2be] px-3 py-3" /></label><label className="text-sm font-medium sm:col-span-2">不适记录<textarea aria-label="不适记录" value={draft.discomfort_detail} onChange={(event) => setDraft({ ...draft,discomfort_detail:event.target.value })} className="mt-1 min-h-20 w-full rounded-md border border-[#ded2be] px-3 py-3" /></label></div>{draft.has_discomfort && <SafetyNotice text="保存后，后续训练建议会优先恢复；不会追加运动。" />}<button type="submit" className="flex min-h-12 w-full items-center justify-center gap-2 rounded-md bg-[#4f8d5f] px-4 font-semibold text-white"><Save className="h-4 w-4" />{record ? "保存运动修改" : "保存运动记录"}</button></form>;
 }
 
-function DailyHistoryPage({ data,date,onBack,onEditWeight,onEditMeal,onEditExercise,onEditCheckin,onPlan }: { data:AppData;date:string;onBack:()=>void;onEditWeight:(record:WeightRecord)=>void;onEditMeal:(record:MealRecord)=>void;onEditExercise:(record:ExerciseRecord)=>void;onEditCheckin:()=>void;onPlan:()=>void }) {
+function DailyHistoryPage({ data,date,onBack,onEditWeight,onEditMeal,onAddMeal,onEditExercise,onEditCheckin,onPlan }: { data:AppData;date:string;onBack:()=>void;onEditWeight:(record:WeightRecord)=>void;onEditMeal:(record:MealRecord)=>void;onAddMeal:(type:MealType)=>void;onEditExercise:(record:ExerciseRecord)=>void;onEditCheckin:()=>void;onPlan:()=>void }) {
   const snapshot=dailyCoachSnapshot(data,date); const weights=data.weights.filter((item) => item.record_date===date); const systemUpdates=(data.coach_events || []).filter((item) => item.record_date===date).slice().reverse();
   const editClass="flex min-h-11 shrink-0 items-center gap-1 rounded-md border border-[#d7dfd6] px-3 text-sm font-semibold";
   return <div className="space-y-4"><header className="flex flex-wrap items-center justify-between gap-3"><div><button onClick={onBack} className="text-sm font-semibold text-[#4f8d5f]">返回日历</button><h1 className="mt-1 text-2xl font-bold">{formatChineseDate(date)}完整详情</h1></div><button onClick={onPlan} className={editClass}>查看并调整当天计划</button></header>
     <section className="border-y border-[#eadfcf] bg-white px-4 py-5 sm:rounded-lg sm:border"><h2 className="text-lg font-bold">体重及称重状态</h2><div className="mt-3 space-y-2">{weights.length ? weights.map((record) => <div key={record.id} className="flex items-center justify-between gap-3 border-l-4 border-[#9fc7a5] bg-[#f8fbf7] p-3"><div><strong>{record.weight_kg.toFixed(1)} kg</strong><p className="mt-1 text-sm text-[#667165]">{weightConditionLabel(record)}{record.note ? ` · ${record.note}` : ""}</p></div><button onClick={() => onEditWeight(record)} className={editClass}>编辑</button></div>) : <EmptyState text="这一天没有体重记录。" />}</div></section>
     <NutritionOverview data={data} date={date} />
-    <section className="border-y border-[#eadfcf] bg-white px-4 py-5 sm:rounded-lg sm:border"><h2 className="text-lg font-bold">饮食与照片</h2><div className="mt-3 space-y-3">{snapshot.meals.length ? snapshot.meals.map((meal) => <article key={meal.id} className="border-l-4 border-[#e5b176] bg-[#fffaf3] p-3"><div className="flex items-start justify-between gap-3"><div><p className="text-xs font-bold text-[#8a5b2d]">{mealTypeLabels[meal.meal_type]}</p><h3 className="mt-1 font-bold">{meal.food_name}</h3><p className="mt-1 text-sm text-[#667165]">{meal.portion || "份量未填写"} · {meal.nutrition ? `${meal.nutrition.calories_min}–${meal.nutrition.calories_max} kcal · 蛋白质 ${meal.nutrition.protein_g}g · 脂肪 ${meal.nutrition.fat_g}g · 碳水 ${meal.nutrition.carbohydrate_g}g` : "营养未知，未按零计入"}</p>{meal.notes && <p className="mt-1 text-sm text-[#667165]">{meal.notes}</p>}</div><button onClick={() => onEditMeal(meal)} className={editClass}>编辑</button></div>{meal.images.length > 0 && <div className="mt-3 flex gap-2 overflow-x-auto">{meal.images.map((image) => image.signed_url ? <img key={image.id} src={image.signed_url} alt="餐食照片" className="h-20 w-20 shrink-0 rounded object-cover" /> : <span key={image.id} className="flex h-20 w-20 shrink-0 items-center justify-center rounded bg-[#eee8dd] text-xs">照片已保存</span>)}</div>}</article>) : <EmptyState text="这一天没有饮食记录。" />}</div></section>
+    <ActualMeals title="饮食与照片" meals={snapshot.meals} onEdit={onEditMeal} onAdd={onAddMeal} />
     <section className="border-y border-[#eadfcf] bg-white px-4 py-5 sm:rounded-lg sm:border"><h2 className="text-lg font-bold">运动实际执行</h2><div className="mt-3 space-y-2">{snapshot.exercises.length ? snapshot.exercises.map((record) => <div key={record.id} className="flex items-start justify-between gap-3 border-l-4 border-[#8fb6c9] bg-[#f4f9fb] p-3"><div><strong>{record.exercise_type} · {record.duration_min} 分钟</strong><p className="mt-1 text-sm text-[#667165]">{record.intensity}强度{record.distance_km ? ` · ${record.distance_km} km` : ""}{record.calories_burned ? ` · ${record.calories_burned} kcal` : ""}{record.has_discomfort ? " · 已记录不适" : ""}</p><p className="mt-1 text-sm text-[#667165]">感受：{record.feeling || "未填写"}</p>{record.discomfort_detail && <p className="mt-1 text-sm text-red-800">不适：{record.discomfort_detail}</p>}</div><button onClick={() => onEditExercise(record)} className={editClass}>编辑</button></div>) : <EmptyState text="这一天没有运动记录。" />}</div></section>
     <section className="border-y border-[#eadfcf] bg-white px-4 py-5 sm:rounded-lg sm:border"><div className="flex items-center justify-between gap-3"><h2 className="text-lg font-bold">饮水、睡眠与身体状态</h2><button onClick={onEditCheckin} className={editClass}>编辑</button></div><div className="mt-3 grid grid-cols-2 gap-3 text-sm sm:grid-cols-4"><p>饮水<br/><strong>{snapshot.checkin ? `${snapshot.checkin.water_ml} ml` : "未记录"}</strong></p><p>睡眠<br/><strong>{snapshot.checkin?.sleep_hours ?? "未记录"}</strong></p><p>疲劳<br/><strong>{snapshot.checkin?.fatigue_level != null ? `${snapshot.checkin.fatigue_level}/10` : "未记录"}</strong></p><p>身体感受<br/><strong>{snapshot.checkin?.body_feeling || "未记录"}</strong></p></div></section>
     <section className="border-y border-[#eadfcf] bg-white px-4 py-5 sm:rounded-lg sm:border"><h2 className="text-lg font-bold">计划与实际执行</h2><div className="mt-3 space-y-2">{snapshot.tasks.map((task) => <div key={task.id} className="flex items-center justify-between gap-3 border-b border-[#eee8dd] py-2 text-sm"><span className="min-w-0"><time className="mr-2 text-[#667165]">{task.time}</time>{task.title}<small className="mt-1 block text-[#667165]">计划：{task.amount}</small></span><strong className="shrink-0 whitespace-nowrap">{taskState(data,task)==="completed" ? "已完成" : taskState(data,task)==="skipped" ? "已跳过" : "待执行"}</strong></div>)}</div><p className="mt-3 text-sm text-[#667165]">实际运动共 {snapshot.exercises.reduce((sum,item) => sum+item.duration_min,0)} 分钟；已记录 {snapshot.meals.length} 餐。实际记录变化不会自动覆盖已确认任务。</p></section>
